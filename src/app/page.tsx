@@ -30,9 +30,9 @@ const todasColunas = [
   { id: 'estados_abrangencias', nome: 'Estados' },
   { id: 'prazo_validade', nome: 'Prazo de Validade da Portaria' },
   { id: 'data_expiracao', nome: 'Data de Expiração da Portaria' },
-  { id: 'link_portaria_dou', nome: 'Link da Portaria Publicada no DOU' },
+  { id: 'link_portaria_dou', nome: 'Link da Portaria no DOU' },
   { id: 'quantidade_retificado_dou', nome: 'Quantidade de Retificações da Portaria no DOU' },
-  { id: 'ultimo_link_retificado_dou', nome: 'Última Retificação da Portaria Publicada no DOU' },
+  { id: 'ultimo_link_retificado_dou', nome: 'Última Retificação da Portaria no DOU' },
   { id: 'link_revogado_dou', nome: 'Link da Portaria Revogada no DOU' },
 ]
 
@@ -66,9 +66,89 @@ const RenderizarLink = ({ url, texto }: { url: string, texto: string }) => {
   )
 }
 
+// 🔒 FUNÇÃO SEGURA: Exportar para CSV (sem bibliotecas vulneráveis)
+const exportarParaCSV = (dados: any[], colunasSelecionadas: string[], todasColunas: any[], nomeArquivo: string = `portarias_iphan_${new Date().toISOString().split('T')[0]}.csv`) => {
+  if (dados.length === 0) {
+    alert('Não há dados para exportar.')
+    return
+  }
+
+  // ORDENAR AS COLUNAS SELECIONADAS NA MESMA ORDEM DA VISUALIZAÇÃO
+  // A ordem deve ser: primeiro status (se selecionado), depois as demais colunas na ordem de todasColunas
+  const colunasOrdenadas = [];
+  
+  // Se status_portaria está selecionado, adiciona primeiro
+  if (colunasSelecionadas.includes('status_portaria')) {
+    colunasOrdenadas.push('status_portaria');
+  }
+  
+  // Depois adiciona as demais colunas na ordem de todasColunas
+  todasColunas.forEach(coluna => {
+    if (colunasSelecionadas.includes(coluna.id) && coluna.id !== 'status_portaria') {
+      colunasOrdenadas.push(coluna.id);
+    }
+  });
+
+  // Preparar cabeçalhos
+  const headers = colunasOrdenadas.map(colunaId => {
+    if (colunaId === 'status_portaria') return 'Status'
+    const coluna = todasColunas.find(c => c.id === colunaId)
+    return coluna ? coluna.nome : colunaId
+  })
+
+  // Preparar dados
+  const linhas = dados.map(portaria => {
+    return colunasOrdenadas.map(colunaId => {
+      if (colunaId === 'status_portaria') {
+        // Calcular status para exportação
+        if (portaria.tipo && 
+            normalizarTexto(portaria.tipo).includes('revogacao') && 
+            portaria.link_revogado_dou && 
+            portaria.link_revogado_dou.trim() !== '') {
+          return 'Revogado'
+        }
+        
+        const dataExpiracao = portaria.data_expiracao
+        if (!dataExpiracao || dataExpiracao.trim() === '') return 'Data não informada'
+        
+        const regexData = /^(\d{2})\/(\d{2})\/(\d{4})$/
+        const match = dataExpiracao.match(regexData)
+        
+        if (!match) return 'Formato inválido'
+        
+        const dia = parseInt(match[1])
+        const mes = parseInt(match[2]) - 1
+        const ano = parseInt(match[3])
+        const dataExp = new Date(ano, mes, dia)
+        const hoje = new Date()
+        hoje.setHours(0, 0, 0, 0)
+        
+        return dataExp > hoje ? 'Vigente' : 'Expirada'
+      }
+      return `"${(portaria[colunaId] || 'N/A').toString().replace(/"/g, '""')}"`
+    }).join(',')
+  })
+
+  // Combinar cabeçalhos e dados
+  const csvContent = [headers.join(','), ...linhas].join('\n')
+  
+  // Criar e fazer download do arquivo
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+  const link = document.createElement('a')
+  const url = URL.createObjectURL(blob)
+  link.setAttribute('href', url)
+  link.setAttribute('download', nomeArquivo)
+  link.style.visibility = 'hidden'
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+}
+
 export default function ConsultaPortarias() {
   const [portarias, setPortarias] = useState<any[]>([])
+  const [todosRegistros, setTodosRegistros] = useState<any[]>([])
   const [dadosFiltrados, setDadosFiltrados] = useState<any[]>([])
+  const [dadosExibicao, setDadosExibicao] = useState<any[]>([])
   const [busca, setBusca] = useState('')
   const [colunasSelecionadas, setColunasSelecionadas] = useState([
     'portaria', 
@@ -86,21 +166,29 @@ export default function ConsultaPortarias() {
   const [carregando, setCarregando] = useState(true)
   const [dataAtualizacao, setDataAtualizacao] = useState<string>('')
   const [mostrandoTodos, setMostrandoTodos] = useState(false)
+  
+  // Estados: Paginação
+  const [paginaAtual, setPaginaAtual] = useState(1)
+  const [itensPorPagina] = useState(20)
+  const [totalPaginas, setTotalPaginas] = useState(1)
+  const [totalRegistros, setTotalRegistros] = useState(0)
 
   // Buscar dados do Supabase
   useEffect(() => {
     const buscarDados = async () => {
       try {
         // Buscar TODOS os dados sem limite
-        const { data, error } = await supabase
+        const { data, error, count } = await supabase
           .from('portarias_iphan')
-          .select('*')
+          .select('*', { count: 'exact' })
           .order('data_publicacao_dou', { ascending: false })
 
         if (error) {
           console.error('Erro:', error)
         } else {
           setPortarias(data || [])
+          setTodosRegistros(data || [])
+          setTotalRegistros(count || 0)
           
           // Buscar a última data de atualização
           const { data: dataAtualizacao, error: errorAtualizacao } = await supabase
@@ -130,33 +218,53 @@ export default function ConsultaPortarias() {
     buscarDados()
   }, [])
 
-  // Efeito para exibição automática inicial
+  // Efeito para exibição automática inicial - 5 registros recentes com status vigente
   useEffect(() => {
     if (portarias.length === 0) return
 
-    // Encontrar a data mais recente
-    const datasUnicas = [...new Set(portarias.map(p => p.data_publicacao_dou).filter(Boolean))]
-    const dataMaisRecente = datasUnicas.sort((a, b) => {
-      // Converter dd/mm/aaaa para Date para ordenação
-      const [diaA, mesA, anoA] = a.split('/').map(Number)
-      const [diaB, mesB, anoB] = b.split('/').map(Number)
-      return new Date(anoB, mesB - 1, diaB).getTime() - new Date(anoA, mesA - 1, diaA).getTime()
-    })[0]
-
-    // Filtrar apenas registros com a data mais recente E status Vigente
-    const dadosIniciais = portarias.filter(portaria => {
+    // Filtrar apenas registros com status Vigente
+    const registrosVigentes = portarias.filter(portaria => {
       const status = calcularStatus(portaria)
-      return portaria.data_publicacao_dou === dataMaisRecente && status === 'Vigente'
+      return status === 'Vigente'
     })
 
-    // Exibir apenas 5 registros na visualização inicial
-    setDadosFiltrados(dadosIniciais.slice(0, 5))
+    // Ordenar por data de publicação mais recente e pegar os 5 primeiros
+    const registrosRecentes = registrosVigentes
+      .sort((a, b) => {
+        const [diaA, mesA, anoA] = (a.data_publicacao_dou || '').split('/').map(Number)
+        const [diaB, mesB, anoB] = (b.data_publicacao_dou || '').split('/').map(Number)
+        const dataA = new Date(anoA, mesA - 1, diaA)
+        const dataB = new Date(anoB, mesB - 1, diaB)
+        return dataB.getTime() - dataA.getTime()
+      })
+      .slice(0, 5)
+
+    setDadosFiltrados(registrosRecentes)
+    setDadosExibicao(registrosRecentes)
     setMostrandoTodos(false)
+    setPaginaAtual(1)
   }, [portarias])
 
-  // Função para calcular status - CORRIGIDA: Inclui status "Revogado"
+  // Efeito: Atualizar paginação quando dadosFiltrados mudam
+  useEffect(() => {
+    if (mostrandoTodos || busca) {
+      // Calcular total de páginas apenas no modo completo ou busca
+      const total = Math.ceil(dadosFiltrados.length / itensPorPagina)
+      setTotalPaginas(total)
+      
+      // Calcular dados para exibição na página atual
+      const inicio = (paginaAtual - 1) * itensPorPagina
+      const fim = inicio + itensPorPagina
+      setDadosExibicao(dadosFiltrados.slice(inicio, fim))
+    } else {
+      // No modo inicial, exibir todos os dados filtrados (5 registros)
+      setDadosExibicao(dadosFiltrados)
+    }
+  }, [dadosFiltrados, paginaAtual, itensPorPagina, mostrandoTodos, busca])
+
+  // Função para calcular status - Inclui status "Revogado"
   const calcularStatus = (portaria: any) => {
-    // 🔧 NOVA CONDIÇÃO: Verificar se é Revogado
+    // CONDIÇÃO: Verificar se é Revogado
     if (portaria.tipo && 
         normalizarTexto(portaria.tipo).includes('revogacao') && 
         portaria.link_revogado_dou && 
@@ -185,26 +293,30 @@ export default function ConsultaPortarias() {
     return dataExp > hoje ? 'Vigente' : 'Expirada'
   }
 
-  // Busca dinâmica no Supabase - CORRIGIDA: case-insensitive e sem caracteres especiais
+  // Busca dinâmica no Supabase - case-insensitive e sem caracteres especiais
   const handleBusca = async (termo: string) => {
     setBusca(termo)
     
     if (!termo.trim()) {
-      // Se busca vazia, voltar para exibição inicial automática (5 registros)
-      const datasUnicas = [...new Set(portarias.map(p => p.data_publicacao_dou).filter(Boolean))]
-      const dataMaisRecente = datasUnicas.sort((a, b) => {
-        const [diaA, mesA, anoA] = a.split('/').map(Number)
-        const [diaB, mesB, anoB] = b.split('/').map(Number)
-        return new Date(anoB, mesB - 1, diaB).getTime() - new Date(anoA, mesA - 1, diaA).getTime()
-      })[0]
-
-      const dadosIniciais = portarias.filter(portaria => {
+      // Se busca vazia, voltar para exibição inicial automática (5 registros vigentes)
+      const registrosVigentes = portarias.filter(portaria => {
         const status = calcularStatus(portaria)
-        return portaria.data_publicacao_dou === dataMaisRecente && status === 'Vigente'
+        return status === 'Vigente'
       })
 
-      setDadosFiltrados(dadosIniciais.slice(0, 5))
+      const registrosRecentes = registrosVigentes
+        .sort((a, b) => {
+          const [diaA, mesA, anoA] = (a.data_publicacao_dou || '').split('/').map(Number)
+          const [diaB, mesB, anoB] = (b.data_publicacao_dou || '').split('/').map(Number)
+          const dataA = new Date(anoA, mesA - 1, diaA)
+          const dataB = new Date(anoB, mesB - 1, diaB)
+          return dataB.getTime() - dataA.getTime()
+        })
+        .slice(0, 5)
+
+      setDadosFiltrados(registrosRecentes)
       setMostrandoTodos(false)
+      setPaginaAtual(1)
       return
     }
 
@@ -225,6 +337,7 @@ export default function ConsultaPortarias() {
 
       if (!todosDados) {
         setDadosFiltrados([])
+        setDadosExibicao([])
         return
       }
 
@@ -243,7 +356,7 @@ export default function ConsultaPortarias() {
           portaria.apoio_institucional,
           portaria.municipios_abrangencias,
           portaria.estados_abrangencias,
-          portaria.tipo // 🔧 INCLUÍDO: campo tipo na busca
+          portaria.tipo
         ]
           .filter(Boolean)
           .join(' ')
@@ -258,27 +371,65 @@ export default function ConsultaPortarias() {
 
       setDadosFiltrados(resultadosFiltrados)
       setMostrandoTodos(true) // Quando busca, mostra todos os resultados
+      setPaginaAtual(1)
     } catch (err) {
       console.error('Erro na busca:', err)
     }
   }
 
-  // Função para carregar mais registros
+  // FUNÇÃO: Carregar todos os registros com paginação
   const carregarMaisRegistros = () => {
-    const datasUnicas = [...new Set(portarias.map(p => p.data_publicacao_dou).filter(Boolean))]
-    const dataMaisRecente = datasUnicas.sort((a, b) => {
-      const [diaA, mesA, anoA] = a.split('/').map(Number)
-      const [diaB, mesB, anoB] = b.split('/').map(Number)
-      return new Date(anoB, mesB - 1, diaB).getTime() - new Date(anoA, mesA - 1, diaA).getTime()
-    })[0]
-
-    const dadosIniciais = portarias.filter(portaria => {
-      const status = calcularStatus(portaria)
-      return portaria.data_publicacao_dou === dataMaisRecente && status === 'Vigente'
-    })
-
-    setDadosFiltrados(dadosIniciais)
+    setDadosFiltrados(todosRegistros)
     setMostrandoTodos(true)
+    setPaginaAtual(1)
+  }
+
+  // FUNÇÃO: Determinar quais dados exportar
+  const getDadosParaExportar = () => {
+    // Se há uma busca ativa, exportar os resultados da busca
+    if (busca && busca.trim() !== '') {
+      return {
+        dados: dadosFiltrados,
+        nome: `portarias_busca_${busca.replace(/[^a-zA-Z0-9]/g, '_')}_${new Date().toISOString().split('T')[0]}.csv`
+      }
+    }
+    
+    // Se está no modo "ver todos", exportar todos os registros
+    if (mostrandoTodos) {
+      return {
+        dados: todosRegistros,
+        nome: `portarias_completas_${new Date().toISOString().split('T')[0]}.csv`
+      }
+    }
+    
+    // Caso contrário (modo inicial), exportar todos os registros
+    return {
+      dados: todosRegistros,
+      nome: `portarias_iphan_${new Date().toISOString().split('T')[0]}.csv`
+    }
+  }
+
+  // FUNÇÃO: Exportar dados
+  const handleExportarCSV = () => {
+    const { dados, nome } = getDadosParaExportar()
+    exportarParaCSV(dados, colunasSelecionadas, todasColunas, nome)
+  }
+
+  // FUNÇÕES: Navegação de páginas
+  const irParaPagina = (pagina: number) => {
+    setPaginaAtual(pagina)
+  }
+
+  const avancarPagina = () => {
+    if (paginaAtual < totalPaginas) {
+      setPaginaAtual(paginaAtual + 1)
+    }
+  }
+
+  const voltarPagina = () => {
+    if (paginaAtual > 1) {
+      setPaginaAtual(paginaAtual - 1)
+    }
   }
 
   // Alternar seleção de coluna
@@ -326,10 +477,75 @@ export default function ConsultaPortarias() {
       case 'Expirada':
         return 'bg-red-100 text-red-800'
       case 'Revogado':
-        return 'bg-orange-100 text-orange-800' // 🔧 NOVA COR para Revogado
+        return 'bg-orange-100 text-orange-800'
       default:
         return 'bg-gray-100 text-gray-800'
     }
+  }
+
+  // FUNÇÃO: Gerar botões de paginação
+  const gerarBotoesPagina = () => {
+    const botoes = []
+    const maxBotoes = 5
+    
+    let inicio = Math.max(1, paginaAtual - Math.floor(maxBotoes / 2))
+    let fim = Math.min(totalPaginas, inicio + maxBotoes - 1)
+    
+    // Ajustar início se necessário
+    if (fim - inicio + 1 < maxBotoes) {
+      inicio = Math.max(1, fim - maxBotoes + 1)
+    }
+    
+    for (let i = inicio; i <= fim; i++) {
+      botoes.push(
+        <button
+          key={i}
+          onClick={() => irParaPagina(i)}
+          className={`px-3 py-1 text-sm font-medium rounded-md ${
+            paginaAtual === i
+              ? 'bg-blue-600 text-white'
+              : 'bg-white text-gray-700 hover:bg-gray-50 border border-gray-300'
+          }`}
+        >
+          {i}
+        </button>
+      )
+    }
+    
+    return botoes
+  }
+
+  // FUNÇÃO: Obter texto do botão de exportação
+  const getTextoExportacao = () => {
+    const { dados } = getDadosParaExportar()
+    const quantidade = dados.length
+    
+    if (busca && busca.trim() !== '') {
+      return `Exportar Resultados da Busca (${quantidade} registros)`
+    } else if (mostrandoTodos) {
+      return `Exportar Todos os Registros (${quantidade} registros)`
+    } else {
+      return `Exportar Todos os Registros (${quantidade} registros)`
+    }
+  }
+
+  // FUNÇÃO: Obter colunas ordenadas para exibição (igual à tabela)
+  const getColunasOrdenadasParaExibicao = () => {
+    const colunasOrdenadas = [];
+    
+    // Status sempre vem primeiro se estiver selecionado
+    if (colunasSelecionadas.includes('status_portaria')) {
+      colunasOrdenadas.push({ id: 'status_portaria', nome: 'Status' });
+    }
+    
+    // Depois as demais colunas na ordem de todasColunas
+    todasColunas.forEach(coluna => {
+      if (colunasSelecionadas.includes(coluna.id) && coluna.id !== 'status_portaria') {
+        colunasOrdenadas.push(coluna);
+      }
+    });
+    
+    return colunasOrdenadas;
   }
 
   if (carregando) {
@@ -377,7 +593,7 @@ export default function ConsultaPortarias() {
           {/* Seleção de Colunas */}
           <div className="mt-6">
             <h3 className="text-lg font-semibold text-gray-900 mb-3">
-              Colunas Visíveis:
+              Selecione as colunas para visualização dos dados:
             </h3>
             <div className="flex flex-wrap gap-3">
               {todasColunas.map((coluna) => (
@@ -411,66 +627,111 @@ export default function ConsultaPortarias() {
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  {colunasSelecionadas.includes('status_portaria') && (
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Status
+                  {getColunasOrdenadasParaExibicao().map(coluna => (
+                    <th key={coluna.id} className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      {coluna.nome}
                     </th>
-                  )}
-                  {todasColunas
-                    .filter(coluna => colunasSelecionadas.includes(coluna.id))
-                    .map(coluna => (
-                      <th key={coluna.id} className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        {coluna.nome}
-                      </th>
-                    ))
-                  }
+                  ))}
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {dadosFiltrados.map((portaria) => (
+                {dadosExibicao.map((portaria) => (
                   <tr key={portaria.id} className="hover:bg-gray-50">
-                    {colunasSelecionadas.includes('status_portaria') && (
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span
-                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${obterClasseStatus(calcularStatus(portaria))}`}
-                        >
-                          {calcularStatus(portaria)}
-                        </span>
+                    {getColunasOrdenadasParaExibicao().map(coluna => (
+                      <td key={coluna.id} className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {coluna.id === 'status_portaria' ? (
+                          <span
+                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${obterClasseStatus(calcularStatus(portaria))}`}
+                          >
+                            {calcularStatus(portaria)}
+                          </span>
+                        ) : (
+                          renderizarConteudoCelula(coluna.id, portaria[coluna.id] || 'N/A')
+                        )}
                       </td>
-                    )}
-                    {todasColunas
-                      .filter(coluna => colunasSelecionadas.includes(coluna.id))
-                      .map(coluna => (
-                        <td key={coluna.id} className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                          {renderizarConteudoCelula(coluna.id, portaria[coluna.id] || 'N/A')}
-                        </td>
-                      ))
-                    }
+                    ))}
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
 
-          {/* Contador de resultados */}
-          <div className="bg-gray-50 px-6 py-3 border-t border-gray-200 flex justify-between items-center">
-            <p className="text-sm text-gray-700">
-              Mostrando <span className="font-semibold">{dadosFiltrados.length}</span> de{' '}
-              <span className="font-semibold">{portarias.length}</span> registros
-              {busca && (
-                <span> para '<span className="font-semibold">{busca}</span>'</span>
-              )}
-            </p>
-            
-            {/* Botão "Ver mais" apenas na exibição inicial com 5 registros */}
-            {!mostrandoTodos && !busca && (
-              <button
-                onClick={carregarMaisRegistros}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm"
-              >
-                Ver mais registros de portarias
-              </button>
-            )}
+          {/* ÁREA DE CONTROLE - Contador, Paginação e Exportação */}
+          <div className="bg-gray-50 px-6 py-4 border-t border-gray-200">
+            <div className="flex flex-col md:flex-row justify-between items-center gap-4">
+              
+              {/* Informações de paginação */}
+              <div className="text-sm text-gray-700">
+                {mostrandoTodos || busca ? (
+                  // EXIBIÇÃO DE PAGINAÇÃO quando em modo completo
+                  <div className="flex items-center gap-4">
+                    <span>
+                      Página {paginaAtual} de {totalPaginas} 
+                      {' '}({dadosExibicao.length} de {dadosFiltrados.length} registros)
+                    </span>
+                    
+                    {/* Controles de paginação */}
+                    {totalPaginas > 1 && (
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={voltarPagina}
+                          disabled={paginaAtual === 1}
+                          className="px-3 py-1 text-sm bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          Anterior
+                        </button>
+                        
+                        <div className="flex gap-1">
+                          {gerarBotoesPagina()}
+                        </div>
+                        
+                        <button
+                          onClick={avancarPagina}
+                          disabled={paginaAtual === totalPaginas}
+                          className="px-3 py-1 text-sm bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          Próxima
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  // Exibição inicial (5 registros)
+                  <span>
+                    Mostrando <span className="font-semibold">{dadosExibicao.length}</span> registros vigentes mais recentes
+                    {busca && (
+                      <span> para '<span className="font-semibold">{busca}</span>'</span>
+                    )}
+                  </span>
+                )}
+              </div>
+
+              {/* BOTÕES DE AÇÃO */}
+              <div className="flex gap-3">
+                {/* Botão Exportar CSV - sempre visível quando há dados */}
+                {(todosRegistros.length > 0) && (
+                  <button
+                    onClick={handleExportarCSV}
+                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm flex items-center gap-2"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    {getTextoExportacao()}
+                  </button>
+                )}
+
+                {/* Botão "Ver mais" apenas na exibição inicial */}
+                {!mostrandoTodos && !busca && (
+                  <button
+                    onClick={carregarMaisRegistros}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm"
+                  >
+                    Ver mais registros de portarias
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
         </div>
 
