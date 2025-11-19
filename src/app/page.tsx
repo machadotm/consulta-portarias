@@ -75,7 +75,7 @@ const exportarParaCSV = (dados: any[], colunasSelecionadas: string[], todasColun
 
   // ORDENAR AS COLUNAS SELECIONADAS NA MESMA ORDEM DA VISUALIZAÇÃO
   // A ordem deve ser: primeiro status (se selecionado), depois as demais colunas na ordem de todasColunas
-  const colunasOrdenadas = [];
+  const colunasOrdenadas: string[] = [];
   
   // Se status_portaria está selecionado, adiciona primeiro
   if (colunasSelecionadas.includes('status_portaria')) {
@@ -531,7 +531,7 @@ export default function ConsultaPortarias() {
 
   // FUNÇÃO: Obter colunas ordenadas para exibição (igual à tabela)
   const getColunasOrdenadasParaExibicao = () => {
-    const colunasOrdenadas = [];
+    const colunasOrdenadas: {id: string, nome: string}[] = [];
     
     // Status sempre vem primeiro se estiver selecionado
     if (colunasSelecionadas.includes('status_portaria')) {
