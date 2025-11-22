@@ -18,21 +18,21 @@ const todasColunas = [
   { id: 'tipo', nome: 'Tipo' },
   { id: 'regimento_normativo', nome: 'Regimento Normativo' },
   { id: 'retificado', nome: 'Portaria Retificada?' },
-  { id: 'processo', nome: 'Nº do Processo' },
+  { id: 'processo', nome: 'Processo' },
   { id: 'enquadramento_in', nome: 'Enquadramento IN' },  
   { id: 'empreendedor', nome: 'Empreendedor' },
   { id: 'empreendimento', nome: 'Empreendimento' },
-  { id: 'projeto', nome: 'Nome do Projeto' },
+  { id: 'projeto', nome: 'Projeto' },
   { id: 'arqueologos_coordenadores', nome: 'Arqueólogos Coordenadores' },
   { id: 'arqueologos_campo', nome: 'Arqueólogos de Campo' },
   { id: 'apoio_institucional', nome: 'Apoio Institucional' },
   { id: 'municipios_abrangencias', nome: 'Municípios' },
   { id: 'estados_abrangencias', nome: 'Estados' },
-  { id: 'prazo_validade', nome: 'Prazo de Validade da Portaria' },
-  { id: 'data_expiracao', nome: 'Data de Expiração da Portaria' },
+  { id: 'prazo_validade', nome: 'Prazo de Validade' },
+  { id: 'data_expiracao', nome: 'Data de Expiração' },
   { id: 'link_portaria_dou', nome: 'Link da Portaria no DOU' },
   { id: 'quantidade_retificado_dou', nome: 'Quantidade de Retificações da Portaria no DOU' },
-  { id: 'ultimo_link_retificado_dou', nome: 'Última Retificação da Portaria no DOU' },
+  { id: 'ultimo_link_retificado_dou', nome: 'Link da Última Retificação da Portaria no DOU' },
   { id: 'link_revogado_dou', nome: 'Link da Portaria Revogada no DOU' },
 ]
 
@@ -521,11 +521,11 @@ export default function ConsultaPortarias() {
     const quantidade = dados.length
     
     if (busca && busca.trim() !== '') {
-      return `Exportar Resultados da Busca (${quantidade} registros)`
+      return `Exportar resultados da busca (${quantidade} registros)`
     } else if (mostrandoTodos) {
-      return `Exportar Todos os Registros (${quantidade} registros)`
+      return `Exportar resultado (${quantidade} registros)`
     } else {
-      return `Exportar Todos os Registros (${quantidade} registros)`
+      return `Exportar resultado (${quantidade} registros)`
     }
   }
 
@@ -698,7 +698,7 @@ export default function ConsultaPortarias() {
                 ) : (
                   // Exibição inicial (5 registros)
                   <span>
-                    Mostrando <span className="font-semibold">{dadosExibicao.length}</span> registros vigentes mais recentes
+                    Mostrando <span className="font-semibold">{dadosExibicao.length}</span> registros mais recentes
                     {busca && (
                       <span> para '<span className="font-semibold">{busca}</span>'</span>
                     )}
