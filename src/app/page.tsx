@@ -571,6 +571,17 @@ export default function ConsultaPortarias() {
           <p className="text-gray-900">
             Dados extraídos a partir da Portaria nº 101/2025 - Publicada no DOU em 06/11/2025
           </p>
+          <p className="text-gray-900">
+            Para consultar dados anteriores a 06/11/2025 - {' '}
+            <a 
+              href="https://banco-portarias-cna.vercel.app/" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="text-blue-600 hover:text-blue-800 underline"
+              >
+              Ver banco de portarias
+            </a>
+          </p>
           <p className="text-gray-600">            
             Busque e filtre as informações de acordo com suas necessidades
           </p>
