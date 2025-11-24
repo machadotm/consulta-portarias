@@ -9,6 +9,9 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 )
 
+// Nome da chave primária da tabela — ajuste se for diferente de "id"
+const PRIMARY_KEY = 'id'
+
 // Lista de todas as colunas disponíveis
 const todasColunas = [
   { id: 'portaria', nome: 'Portaria' },
@@ -73,30 +76,24 @@ const exportarParaCSV = (dados: any[], colunasSelecionadas: string[], todasColun
     return
   }
 
-  // ORDENAR AS COLUNAS SELECIONADAS NA MESMA ORDEM DA VISUALIZAÇÃO
-  // A ordem deve ser: primeiro status (se selecionado), depois as demais colunas na ordem de todasColunas
   const colunasOrdenadas: string[] = [];
   
-  // Se status_portaria está selecionado, adiciona primeiro
   if (colunasSelecionadas.includes('status_portaria')) {
     colunasOrdenadas.push('status_portaria');
   }
   
-  // Depois adiciona as demais colunas na ordem de todasColunas
   todasColunas.forEach(coluna => {
     if (colunasSelecionadas.includes(coluna.id) && coluna.id !== 'status_portaria') {
       colunasOrdenadas.push(coluna.id);
     }
   });
 
-  // Preparar cabeçalhos
   const headers = colunasOrdenadas.map(colunaId => {
     if (colunaId === 'status_portaria') return 'Status'
     const coluna = todasColunas.find(c => c.id === colunaId)
     return coluna ? coluna.nome : colunaId
   })
 
-  // Preparar dados
   const linhas = dados.map(portaria => {
     return colunasOrdenadas.map(colunaId => {
       if (colunaId === 'status_portaria') {
@@ -129,10 +126,7 @@ const exportarParaCSV = (dados: any[], colunasSelecionadas: string[], todasColun
     }).join(',')
   })
 
-  // Combinar cabeçalhos e dados
   const csvContent = [headers.join(','), ...linhas].join('\n')
-  
-  // Criar e fazer download do arquivo
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
   const link = document.createElement('a')
   const url = URL.createObjectURL(blob)
@@ -144,6 +138,41 @@ const exportarParaCSV = (dados: any[], colunasSelecionadas: string[], todasColun
   document.body.removeChild(link)
 }
 
+// -------------------- Função para buscar todos os dados paginados usando PRIMARY_KEY --------------------
+const buscarTodosDados = async (): Promise<any[]> => {
+  const chunkSize = 1000
+  let start = 0
+  let todosDados: any[] = []
+
+  try {
+    while (true) {
+      const { data, error } = await supabase
+        .from('portarias_iphan')
+        .select('*')
+        .order(PRIMARY_KEY, { ascending: true })
+        .range(start, start + chunkSize - 1)
+
+      if (error) {
+        console.error('Erro ao buscar dados:', error)
+        break
+      }
+
+      if (!data || data.length === 0) break
+
+      todosDados = todosDados.concat(data)
+      start += data.length
+
+      if (data.length < chunkSize) break
+    }
+
+    return todosDados
+  } catch (err) {
+    console.error('Erro na busca paginada:', err)
+    return []
+  }
+}
+
+// -------------------- Componente principal --------------------
 export default function ConsultaPortarias() {
   const [portarias, setPortarias] = useState<any[]>([])
   const [todosRegistros, setTodosRegistros] = useState<any[]>([])
@@ -169,44 +198,36 @@ export default function ConsultaPortarias() {
   
   // Estados: Paginação
   const [paginaAtual, setPaginaAtual] = useState(1)
-  const [itensPorPagina] = useState(20)
+  const [itensPorPagina] = useState(10)
   const [totalPaginas, setTotalPaginas] = useState(1)
   const [totalRegistros, setTotalRegistros] = useState(0)
 
-  // Buscar dados do Supabase
+  // Buscar dados do Supabase (paginação estável usando PRIMARY_KEY)
   useEffect(() => {
     const buscarDados = async () => {
       try {
-        // Buscar TODOS os dados sem limite
-        const { data, error, count } = await supabase
+        setCarregando(true)
+
+        // Buscar todos os dados paginados de forma estável
+        const todos = await buscarTodosDados()
+        setPortarias(todos)
+        setTodosRegistros(todos)
+        setTotalRegistros(todos.length)
+
+        // Buscar a última data de atualização
+        const { data: dataAtualizacao, error: errorAtualizacao } = await supabase
           .from('portarias_iphan')
-          .select('*', { count: 'exact' })
-          .order('data_publicacao_dou', { ascending: false })
+          .select('updated_at')
+          .order('updated_at', { ascending: false })
+          .limit(1)
 
-        if (error) {
-          console.error('Erro:', error)
-        } else {
-          setPortarias(data || [])
-          setTodosRegistros(data || [])
-          setTotalRegistros(count || 0)
-          
-          // Buscar a última data de atualização
-          const { data: dataAtualizacao, error: errorAtualizacao } = await supabase
-            .from('portarias_iphan')
-            .select('updated_at')
-            .order('updated_at', { ascending: false })
-            .limit(1)
-
-          if (!errorAtualizacao && dataAtualizacao && dataAtualizacao.length > 0) {
-            // Converter timestamptz para dd/mm/aaaa no horário de Brasília
-            const dataUTC = new Date(dataAtualizacao[0].updated_at)
-            // Horário de Brasília (UTC-3)
-            const dataBrasilia = new Date(dataUTC.getTime() - 3 * 60 * 60 * 1000)
-            const dia = dataBrasilia.getUTCDate().toString().padStart(2, '0')
-            const mes = (dataBrasilia.getUTCMonth() + 1).toString().padStart(2, '0')
-            const ano = dataBrasilia.getUTCFullYear()
-            setDataAtualizacao(`${dia}/${mes}/${ano}`)
-          }
+        if (!errorAtualizacao && dataAtualizacao && dataAtualizacao.length > 0) {
+          const dataUTC = new Date(dataAtualizacao[0].updated_at)
+          const dataBrasilia = new Date(dataUTC.getTime() - 3 * 60 * 60 * 1000)
+          const dia = dataBrasilia.getUTCDate().toString().padStart(2, '0')
+          const mes = (dataBrasilia.getUTCMonth() + 1).toString().padStart(2, '0')
+          const ano = dataBrasilia.getUTCFullYear()
+          setDataAtualizacao(`${dia}/${mes}/${ano}`)
         }
       } catch (err) {
         console.error('Erro ao carregar dados:', err)
@@ -222,19 +243,18 @@ export default function ConsultaPortarias() {
   useEffect(() => {
     if (portarias.length === 0) return
 
-    // Filtrar apenas registros com status Vigente
     const registrosVigentes = portarias.filter(portaria => {
       const status = calcularStatus(portaria)
       return status === 'Vigente'
     })
 
-    // Ordenar por data de publicação mais recente e pegar os 5 primeiros
     const registrosRecentes = registrosVigentes
+      .slice()
       .sort((a, b) => {
         const [diaA, mesA, anoA] = (a.data_publicacao_dou || '').split('/').map(Number)
         const [diaB, mesB, anoB] = (b.data_publicacao_dou || '').split('/').map(Number)
-        const dataA = new Date(anoA, mesA - 1, diaA)
-        const dataB = new Date(anoB, mesB - 1, diaB)
+        const dataA = new Date(anoA || 0, (mesA || 1) - 1, diaA || 1)
+        const dataB = new Date(anoB || 0, (mesB || 1) - 1, diaB || 1)
         return dataB.getTime() - dataA.getTime()
       })
       .slice(0, 5)
@@ -248,16 +268,13 @@ export default function ConsultaPortarias() {
   // Efeito: Atualizar paginação quando dadosFiltrados mudam
   useEffect(() => {
     if (mostrandoTodos || busca) {
-      // Calcular total de páginas apenas no modo completo ou busca
       const total = Math.ceil(dadosFiltrados.length / itensPorPagina)
       setTotalPaginas(total)
       
-      // Calcular dados para exibição na página atual
       const inicio = (paginaAtual - 1) * itensPorPagina
       const fim = inicio + itensPorPagina
       setDadosExibicao(dadosFiltrados.slice(inicio, fim))
     } else {
-      // No modo inicial, exibir todos os dados filtrados (5 registros)
       setDadosExibicao(dadosFiltrados)
     }
   }, [dadosFiltrados, paginaAtual, itensPorPagina, mostrandoTodos, busca])
@@ -276,7 +293,6 @@ export default function ConsultaPortarias() {
     const dataExpiracao = portaria.data_expiracao
     if (!dataExpiracao || dataExpiracao.trim() === '') return 'Data não informada'
     
-    // Verificar formato dd/mm/aaaa
     const regexData = /^(\d{2})\/(\d{2})\/(\d{4})$/
     const match = dataExpiracao.match(regexData)
     
@@ -288,7 +304,7 @@ export default function ConsultaPortarias() {
     const dataExp = new Date(ano, mes, dia)
     
     const hoje = new Date()
-    hoje.setHours(0, 0, 0, 0) // Zerar horas para comparar só a data
+    hoje.setHours(0, 0, 0, 0)
     
     return dataExp > hoje ? 'Vigente' : 'Expirada'
   }
@@ -298,18 +314,18 @@ export default function ConsultaPortarias() {
     setBusca(termo)
     
     if (!termo.trim()) {
-      // Se busca vazia, voltar para exibição inicial automática (5 registros vigentes)
       const registrosVigentes = portarias.filter(portaria => {
         const status = calcularStatus(portaria)
         return status === 'Vigente'
       })
 
       const registrosRecentes = registrosVigentes
+        .slice()
         .sort((a, b) => {
           const [diaA, mesA, anoA] = (a.data_publicacao_dou || '').split('/').map(Number)
           const [diaB, mesB, anoB] = (b.data_publicacao_dou || '').split('/').map(Number)
-          const dataA = new Date(anoA, mesA - 1, diaA)
-          const dataB = new Date(anoB, mesB - 1, diaB)
+          const dataA = new Date(anoA || 0, (mesA || 1) - 1, diaA || 1)
+          const dataB = new Date(anoB || 0, (mesB || 1) - 1, diaB || 1)
           return dataB.getTime() - dataA.getTime()
         })
         .slice(0, 5)
@@ -320,20 +336,11 @@ export default function ConsultaPortarias() {
       return
     }
 
-    // Busca dinâmica no Supabase - SEM LIMITE
     try {
-      // Normalizar o termo de busca (remover acentos e converter para minúsculas)
       const termoNormalizado = normalizarTexto(termo)
       
-      // Buscar todos os dados primeiro
-      const { data: todosDados, error } = await supabase
-        .from('portarias_iphan')
-        .select('*')
-
-      if (error) {
-        console.error('Erro na busca:', error)
-        return
-      }
+      // Buscar todos os dados paginados usando PRIMARY_KEY (garante que não faltará nenhum registro)
+      const todosDados = await buscarTodosDados()
 
       if (!todosDados) {
         setDadosFiltrados([])
@@ -341,9 +348,7 @@ export default function ConsultaPortarias() {
         return
       }
 
-      // Filtro local normalizado (case-insensitive e sem acentos)
       const resultadosFiltrados = todosDados.filter(portaria => {
-        // Criar uma string com todos os campos de texto concatenados
         const textoCompleto = [
           portaria.portaria,
           portaria.data_publicacao_dou,
@@ -362,22 +367,19 @@ export default function ConsultaPortarias() {
           .join(' ')
           .toLowerCase()
 
-        // Normalizar o texto completo (remover acentos)
         const textoNormalizado = normalizarTexto(textoCompleto)
-        
-        // Verificar se o termo normalizado está contido no texto normalizado
         return textoNormalizado.includes(termoNormalizado)
       })
 
       setDadosFiltrados(resultadosFiltrados)
-      setMostrandoTodos(true) // Quando busca, mostra todos os resultados
+      setMostrandoTodos(true)
       setPaginaAtual(1)
     } catch (err) {
       console.error('Erro na busca:', err)
     }
   }
 
-  // FUNÇÃO: Carregar todos os registros com paginação
+  // FUNÇÃO: Carregar todos os registros com paginação (usa os dados já carregados)
   const carregarMaisRegistros = () => {
     setDadosFiltrados(todosRegistros)
     setMostrandoTodos(true)
@@ -386,7 +388,6 @@ export default function ConsultaPortarias() {
 
   // FUNÇÃO: Determinar quais dados exportar
   const getDadosParaExportar = () => {
-    // Se há uma busca ativa, exportar os resultados da busca
     if (busca && busca.trim() !== '') {
       return {
         dados: dadosFiltrados,
@@ -394,7 +395,6 @@ export default function ConsultaPortarias() {
       }
     }
     
-    // Se está no modo "ver todos", exportar todos os registros
     if (mostrandoTodos) {
       return {
         dados: todosRegistros,
@@ -402,14 +402,12 @@ export default function ConsultaPortarias() {
       }
     }
     
-    // Caso contrário (modo inicial), exportar todos os registros
     return {
       dados: todosRegistros,
       nome: `portarias_iphan_${new Date().toISOString().split('T')[0]}.csv`
     }
   }
 
-  // FUNÇÃO: Exportar dados
   const handleExportarCSV = () => {
     const { dados, nome } = getDadosParaExportar()
     exportarParaCSV(dados, colunasSelecionadas, todasColunas, nome)
@@ -447,12 +445,10 @@ export default function ConsultaPortarias() {
       return <span className="text-gray-500">N/A</span>
     }
 
-    // Verificar se é uma coluna de link
     if (colunaId === 'link_portaria_dou' || 
         colunaId === 'ultimo_link_retificado_dou' || 
         colunaId === 'link_revogado_dou') {
       
-      // Verificar se o valor é uma URL válida
       if (valor.startsWith('http')) {
         return (
           <RenderizarLink 
@@ -465,7 +461,6 @@ export default function ConsultaPortarias() {
       }
     }
 
-    // Para outras colunas, retornar o texto normal
     return valor
   }
 
@@ -491,7 +486,6 @@ export default function ConsultaPortarias() {
     let inicio = Math.max(1, paginaAtual - Math.floor(maxBotoes / 2))
     let fim = Math.min(totalPaginas, inicio + maxBotoes - 1)
     
-    // Ajustar início se necessário
     if (fim - inicio + 1 < maxBotoes) {
       inicio = Math.max(1, fim - maxBotoes + 1)
     }
@@ -533,12 +527,10 @@ export default function ConsultaPortarias() {
   const getColunasOrdenadasParaExibicao = () => {
     const colunasOrdenadas: {id: string, nome: string}[] = [];
     
-    // Status sempre vem primeiro se estiver selecionado
     if (colunasSelecionadas.includes('status_portaria')) {
       colunasOrdenadas.push({ id: 'status_portaria', nome: 'Status' });
     }
     
-    // Depois as demais colunas na ordem de todasColunas
     todasColunas.forEach(coluna => {
       if (colunasSelecionadas.includes(coluna.id) && coluna.id !== 'status_portaria') {
         colunasOrdenadas.push(coluna);
@@ -647,7 +639,7 @@ export default function ConsultaPortarias() {
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {dadosExibicao.map((portaria) => (
-                  <tr key={portaria.id} className="hover:bg-gray-50">
+                  <tr key={portaria[PRIMARY_KEY]} className="hover:bg-gray-50">
                     {getColunasOrdenadasParaExibicao().map(coluna => (
                       <td key={coluna.id} className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                         {coluna.id === 'status_portaria' ? (
@@ -674,14 +666,12 @@ export default function ConsultaPortarias() {
               {/* Informações de paginação */}
               <div className="text-sm text-gray-700">
                 {mostrandoTodos || busca ? (
-                  // EXIBIÇÃO DE PAGINAÇÃO quando em modo completo
                   <div className="flex items-center gap-4">
                     <span>
                       Página {paginaAtual} de {totalPaginas} 
                       {' '}({dadosExibicao.length} de {dadosFiltrados.length} registros)
                     </span>
                     
-                    {/* Controles de paginação */}
                     {totalPaginas > 1 && (
                       <div className="flex items-center gap-2">
                         <button
@@ -707,7 +697,6 @@ export default function ConsultaPortarias() {
                     )}
                   </div>
                 ) : (
-                  // Exibição inicial (5 registros)
                   <span>
                     Mostrando <span className="font-semibold">{dadosExibicao.length}</span> registros mais recentes
                     {busca && (
@@ -719,7 +708,6 @@ export default function ConsultaPortarias() {
 
               {/* BOTÕES DE AÇÃO */}
               <div className="flex gap-3">
-                {/* Botão Exportar CSV - sempre visível quando há dados */}
                 {(todosRegistros.length > 0) && (
                   <button
                     onClick={handleExportarCSV}
@@ -732,7 +720,6 @@ export default function ConsultaPortarias() {
                   </button>
                 )}
 
-                {/* Botão "Ver mais" apenas na exibição inicial */}
                 {!mostrandoTodos && !busca && (
                   <button
                     onClick={carregarMaisRegistros}
