@@ -35,7 +35,7 @@ const todasColunas = [
   { id: 'data_expiracao', nome: 'Data de Expiração' },
   { id: 'link_portaria_dou', nome: 'Link da Portaria no DOU' },
   { id: 'quantidade_retificado_dou', nome: 'Quantidade de Retificações da Portaria no DOU' },
-  { id: 'ultimo_link_retificado_dou', nome: 'Link da Última Retificação da Portaria no DOU' },
+  { id: 'ultimo_link_retificado_dou', nome: 'Link de Retificações da Portaria no DOU' },
   { id: 'link_revogado_dou', nome: 'Link da Portaria Revogada no DOU' },
 ]
 
@@ -120,7 +120,20 @@ const exportarParaCSV = (dados: any[], colunasSelecionadas: string[], todasColun
         const hoje = new Date()
         hoje.setHours(0, 0, 0, 0)
         
-        return dataExp > hoje ? 'Vigente' : 'Expirada'
+        const vigente = dataExp > hoje
+
+        // NOVO STATUS: Vigente Retificado
+        if (
+          vigente &&
+          Number(portaria.quantidade_retificado_dou) > 0 &&
+          portaria.ultimo_link_retificado_dou &&
+          portaria.ultimo_link_retificado_dou.trim() !== ''
+        ) {
+          return 'Vigente Retificado'
+        }
+
+        // Vigente normal
+        return vigente ? 'Vigente' : 'Expirada'
       }
       return `"${(portaria[colunaId] || 'N/A').toString().replace(/"/g, '""')}"`
     }).join(',')
@@ -306,8 +319,22 @@ export default function ConsultaPortarias() {
     const hoje = new Date()
     hoje.setHours(0, 0, 0, 0)
     
-    return dataExp > hoje ? 'Vigente' : 'Expirada'
+    const vigente = dataExp > hoje
+
+    // ✅ 3. NOVO STATUS: Vigente Retificado
+    if (
+      vigente &&
+      Number(portaria.quantidade_retificado_dou) > 0 &&
+      portaria.ultimo_link_retificado_dou &&
+      portaria.ultimo_link_retificado_dou.trim() !== ''
+    ) {
+      return 'Vigente Retificado'
+    }
+
+    // 4. Vigente normal
+    return vigente ? 'Vigente' : 'Expirada'
   }
+  
 
   // Busca dinâmica no Supabase - case-insensitive e sem caracteres especiais
   const handleBusca = async (termo: string) => {
@@ -445,17 +472,50 @@ export default function ConsultaPortarias() {
       return <span className="text-gray-500">N/A</span>
     }
 
-    if (colunaId === 'link_portaria_dou' || 
-        colunaId === 'ultimo_link_retificado_dou' || 
-        colunaId === 'link_revogado_dou') {
-      
+    // ✅ Renderização especial para múltiplas retificações
+    if (colunaId === 'ultimo_link_retificado_dou') {
+      const links = valor
+        .split(',')
+        .map(l => l.trim())
+        .filter(l => l.startsWith('http'))
+
+      if (links.length === 0) {
+        return <span className="text-gray-500">N/A</span>
+      }
+
+      return (
+        <div className="flex flex-col gap-1">
+          {links.map((link, index) => {
+            const numero = String(index + 1).padStart(2, '0')
+            return (
+              <RenderizarLink
+                key={index}
+                url={link}
+                texto={`${numero}ª Retificação`}
+              />
+            )
+          })}
+        </div>
+      )
+    }
+
+    // ✅ Renderização normal de links únicos
+    if (
+      colunaId === 'link_portaria_dou' ||
+      colunaId === 'ultimo_link_retificado_dou' ||
+      colunaId === 'link_revogado_dou'
+    ) {
       if (valor.startsWith('http')) {
         return (
-          <RenderizarLink 
-            url={valor} 
-            texto={colunaId === 'link_portaria_dou' ? 'Ver portaria' : 
-                   colunaId === 'ultimo_link_retificado_dou' ? 'Ver retificação' : 
-                   'Ver revogação'} 
+          <RenderizarLink
+            url={valor}
+            texto={
+              colunaId === 'link_portaria_dou'
+                ? 'Ver portaria'
+                : colunaId === 'link_revogado_dou'
+                ? 'Ver revogação'
+                : 'Ver retificação'
+            }
           />
         )
       }
@@ -464,11 +524,14 @@ export default function ConsultaPortarias() {
     return valor
   }
 
+
   // Função para obter a classe CSS do status
   const obterClasseStatus = (status: string) => {
     switch (status) {
       case 'Vigente':
         return 'bg-green-100 text-green-800'
+      case 'Vigente Retificado':
+        return 'bg-blue-100 text-blue-800'   // ✅ NOVA COR
       case 'Expirada':
         return 'bg-red-100 text-red-800'
       case 'Revogado':
