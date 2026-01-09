@@ -622,8 +622,8 @@ const carregarMaisRegistros = () => {
   }
 
   // UI: paginação/colunas
-  const irParaPagina = () => {
-  const pagina = Number(paginaInput)
+const irParaPagina = (paginaOpcional?: number) => {
+  const pagina = paginaOpcional ?? Number(paginaInput)
 
   if (
     !pagina ||
@@ -636,8 +636,6 @@ const carregarMaisRegistros = () => {
 
   setPaginaAtual(pagina)
 }
-
-
 
   const avancarPagina = () => { if (paginaAtual < totalPaginas) setPaginaAtual(paginaAtual + 1) }
   const voltarPagina = () => { if (paginaAtual > 1) setPaginaAtual(paginaAtual - 1) }
@@ -1072,7 +1070,7 @@ const carregarMaisRegistros = () => {
                           />
                           <button
                             type="button"
-                            onClick={irParaPagina}
+                            onClick={() => irParaPagina()}
                             className="
                               border
                               rounded
