@@ -224,11 +224,12 @@ export default function ConsultaPortarias() {
   const [totalPaginas, setTotalPaginas] = useState(1)
   const [totalRegistros, setTotalRegistros] = useState(0)
 
-  // Estados: Filtros (removido Data de Publicação no DOU e Enquadramento IN)
+  // Estados: Filtros 
   const [filtroAno, setFiltroAno] = useState<string>('')
   const [filtroPortaria, setFiltroPortaria] = useState<string>('')
   const [filtroTipo, setFiltroTipo] = useState<string>('')
   const [filtroRegimento, setFiltroRegimento] = useState<string>('')
+  const [filtroRetificado, setFiltroRetificado] = useState<string>('')
   const [filtroStatus, setFiltroStatus] = useState<string>('')
 
   const [isClient, setIsClient] = useState(false)
@@ -387,7 +388,7 @@ export default function ConsultaPortarias() {
     })
   }, [])
 
-  // Aplicar filtros (removido Data de Publicação no DOU e Enquadramento IN)
+  // Aplicar filtros
   const obterDadosFiltrados = useCallback((dados: any[]) => {
     let resultados = dados
 
@@ -438,13 +439,26 @@ export default function ConsultaPortarias() {
       })
     }
 
+        // Filtro de Retificação
+    if (filtroRetificado) {
+      resultados = resultados.filter(portaria => {
+        const valorRetificado = portaria.retificado || ''
+        const valorNormalizado = normalizarTexto(valorRetificado)
+        const filtroNormalizado = normalizarTexto(filtroRetificado)
+        if (filtroRetificado === 'NULL') {
+          return !portaria.retificado || portaria.retificado.trim() === ''
+        }
+        return valorNormalizado.includes(filtroNormalizado)
+      })
+    }
+
     // Filtro de Status
     if (filtroStatus) {
       resultados = resultados.filter(portaria => calcularStatus(portaria) === filtroStatus)
     }
 
     return resultados
-  }, [filtroAno, filtroPortaria, filtroTipo, filtroRegimento, filtroStatus])
+  }, [filtroAno, filtroPortaria, filtroTipo, filtroRegimento, filtroRetificado, filtroStatus])
 
   // Atualizar dados filtrados quando base/filtros mudam
 useEffect(() => {
@@ -456,6 +470,7 @@ useEffect(() => {
     !filtroPortaria &&
     !filtroTipo &&
     !filtroRegimento &&
+    !filtroRetificado &&
     !filtroStatus
   ) {
     return
@@ -486,6 +501,7 @@ useEffect(() => {
   filtroPortaria,
   filtroTipo,
   filtroRegimento,
+  filtroRetificado,
   filtroStatus,
   todosRegistros,
   aplicarBusca,
@@ -541,6 +557,7 @@ const executarBusca = () => {
     setFiltroPortaria('')
     setFiltroTipo('')
     setFiltroRegimento('')
+    setFiltroRetificado('')
     setFiltroStatus('')
   }
 
@@ -575,11 +592,14 @@ const carregarMaisRegistros = () => {
     
     const dadosParaRegimento = obterDadosFiltrados(dadosFiltrados)
     const regimentos = obterValoresUnicos(dadosParaRegimento, 'regimento_normativo')
+
+    const dadosParaRetificado = obterDadosFiltrados(dadosFiltrados)
+    const retificados = obterValoresUnicos(dadosParaRetificado, 'retificado')
     
-    return { anos, portariasFiltro, tipos, regimentos }
+    return { anos, portariasFiltro, tipos, regimentos, retificados }
   }, [dadosFiltrados, obterDadosFiltrados, obterValoresUnicos])
 
-  const { anos, portariasFiltro, tipos, regimentos } = obterOpcoesFiltro()
+  const { anos, portariasFiltro, tipos, regimentos, retificados } = obterOpcoesFiltro()
 
   // Obter opções de status
   const obterOpcoesStatus = useCallback(() => {
@@ -598,7 +618,7 @@ const carregarMaisRegistros = () => {
         nome: `portarias_busca_${buscaAplicada.replace(/[^a-zA-Z0-9]/g, '_')}_${new Date().toISOString().split('T')[0]}.csv`
       }
     }
-    if (filtroAno || filtroPortaria || filtroTipo || filtroRegimento || filtroStatus) {
+    if (filtroAno || filtroPortaria || filtroTipo || filtroRegimento || filtroRetificado || filtroStatus) {
       return {
         dados: dadosFiltrados,
         nome: `portarias_filtradas_${new Date().toISOString().split('T')[0]}.csv`
@@ -844,7 +864,7 @@ const irParaPagina = (paginaOpcional?: number) => {
                 A base de dados consultada possui <span className="font-semibold">{totalRegistros.toLocaleString()}</span> registros
                 {buscaAplicada && (
                   <span className="font-semibold">
-                    {' '}- Buscando por: "{buscaAplicada}"
+                    {' '}- Buscando por: "{buscaAplicada}" - encontrado {dadosFiltrados.length} registros
                   </span>
                 )}
               </p>
@@ -886,7 +906,7 @@ const irParaPagina = (paginaOpcional?: number) => {
               <h3 className="text-lg font-semibold text-gray-900">
                 Refine o resultado da busca por filtragem:
               </h3>
-              {(filtroAno || filtroPortaria || filtroTipo || filtroRegimento || filtroStatus) && (
+              {(filtroAno || filtroPortaria || filtroTipo || filtroRegimento || filtroRetificado || filtroStatus) && (
                 <button
                   onClick={limparTodosFiltros}
                   className="px-3 py-1 text-sm bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
@@ -953,6 +973,22 @@ const irParaPagina = (paginaOpcional?: number) => {
                   {regimentos.map(regimento => (
                     <option key={regimento} value={regimento === 'Não informado' ? 'NULL' : regimento}>
                       {regimento}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Portaria Retificada?</label>
+                <select
+                  value={filtroRetificado}
+                  onChange={(e) => setFiltroRetificado(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                >
+                  <option value="">Todos</option>
+                  {retificados.map(retificado => (
+                    <option key={retificado} value={retificado === 'Não informado' ? 'NULL' : retificado}>
+                      {retificado}
                     </option>
                   ))}
                 </select>
@@ -1110,7 +1146,7 @@ const irParaPagina = (paginaOpcional?: number) => {
                       const quantidade = dados.length
                       if (buscaAplicada && buscaAplicada.trim() !== '') {
                         return `Exportar resultados da busca (${quantidade} registros)`
-                      } else if (filtroAno || filtroPortaria || filtroTipo || filtroRegimento || filtroStatus) {
+                      } else if (filtroAno || filtroPortaria || filtroTipo || filtroRegimento || filtroRetificado || filtroStatus) {
                         return `Exportar resultados filtrados (${quantidade} registros)`
                       } else if (mostrandoTodos) {
                         return `Exportar todos os dados (${quantidade} registros)`
@@ -1121,7 +1157,7 @@ const irParaPagina = (paginaOpcional?: number) => {
                   </button>
                 )}
 
-                {!mostrandoTodos && !buscaAplicada && !filtroAno && !filtroPortaria && !filtroTipo && !filtroRegimento && !filtroStatus && (
+                {!mostrandoTodos && !buscaAplicada && !filtroAno && !filtroPortaria && !filtroTipo && !filtroRegimento && !filtroRetificado && !filtroStatus && (
                   <button
                     onClick={carregarMaisRegistros}
                     className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm"
