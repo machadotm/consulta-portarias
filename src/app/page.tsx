@@ -59,7 +59,6 @@ const colunasHome = [
 // Função para remover acentos e caracteres especiais
 const normalizarTexto = (texto: string): string => {
   if (!texto) return ''
-  
   return texto
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -72,7 +71,6 @@ const RenderizarLink = ({ url, texto }: { url: string, texto: string }) => {
   if (!url || !url.startsWith('http')) {
     return <span className="text-gray-500">N/A</span>
   }
-
   return (
     <a 
       href={url} 
@@ -94,11 +92,9 @@ const exportarParaCSV = (dados: any[], colunasSelecionadas: string[], todasColun
   }
 
   const colunasOrdenadas: string[] = [];
-  
   if (colunasSelecionadas.includes('status_portaria')) {
     colunasOrdenadas.push('status_portaria');
   }
-  
   todasColunas.forEach(coluna => {
     if (colunasSelecionadas.includes(coluna.id) && coluna.id !== 'status_portaria') {
       colunasOrdenadas.push(coluna.id);
@@ -114,32 +110,24 @@ const exportarParaCSV = (dados: any[], colunasSelecionadas: string[], todasColun
   const linhas = dados.map(portaria => {
     return colunasOrdenadas.map(colunaId => {
       if (colunaId === 'status_portaria') {
-        // Calcular status para exportação
         if (portaria.tipo && 
             normalizarTexto(portaria.tipo).includes('revogacao') && 
             portaria.link_revogado_dou && 
             portaria.link_revogado_dou.trim() !== '') {
           return 'Revogada'
         }
-        
         const dataExpiracao = portaria.data_expiracao
         if (!dataExpiracao || dataExpiracao.trim() === '') return 'Data não informada'
-        
         const regexData = /^(\d{2})\/(\d{2})\/(\d{4})$/
         const match = dataExpiracao.match(regexData)
-        
         if (!match) return 'Formato inválido'
-        
         const dia = parseInt(match[1])
         const mes = parseInt(match[2]) - 1
         const ano = parseInt(match[3])
         const dataExp = new Date(ano, mes, dia)
         const hoje = new Date()
         hoje.setHours(0, 0, 0, 0)
-        
         const vigente = dataExp > hoje
-
-        // NOVO STATUS: Vigente Retificado
         if (
           vigente &&
           Number(portaria.quantidade_retificado_dou) > 0 &&
@@ -148,8 +136,6 @@ const exportarParaCSV = (dados: any[], colunasSelecionadas: string[], todasColun
         ) {
           return 'Vigente Retificado'
         }
-
-        // Vigente normal
         return vigente ? 'Vigente' : 'Expirada'
       }
       return `"${(portaria[colunaId] || 'N/A').toString().replace(/"/g, '""')}"`
@@ -166,6 +152,159 @@ const exportarParaCSV = (dados: any[], colunasSelecionadas: string[], todasColun
   document.body.appendChild(link)
   link.click()
   document.body.removeChild(link)
+}
+
+// -------------------- Componente MultiSelectDropdown (com botão Aplicar/Remover) --------------------
+interface MultiSelectDropdownProps {
+  label: string
+  options: string[]
+  selected: string[]
+  onChange: (selected: string[]) => void
+  onApply?: () => void
+  onRemove?: () => void
+  isApplied?: boolean
+  placeholder?: string
+}
+
+const MultiSelectDropdown = ({ 
+  label, 
+  options, 
+  selected, 
+  onChange, 
+  onApply, 
+  onRemove,
+  isApplied = false,
+  placeholder = 'Selecione...' 
+}: MultiSelectDropdownProps) => {
+  const [isOpen, setIsOpen] = useState(false)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const toggleOption = (value: string) => {
+    if (selected.includes(value)) {
+      onChange(selected.filter(v => v !== value))
+    } else {
+      onChange([...selected, value])
+    }
+  }
+
+  const toggleAll = () => {
+    if (selected.length === options.length) {
+      onChange([])
+    } else {
+      onChange([...options])
+    }
+  }
+
+  const isAllSelected = options.length > 0 && selected.length === options.length
+  const isSomeSelected = selected.length > 0 && selected.length < options.length
+
+  const handleApply = () => {
+    if (onApply) {
+      onApply()
+      setIsOpen(false)
+    }
+  }
+
+  const handleRemove = () => {
+    if (onRemove) {
+      onRemove()
+      setIsOpen(false)
+    }
+  }
+
+  return (
+    <div className="relative" ref={dropdownRef}>
+      <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-left flex justify-between items-center focus:ring-2 focus:ring-blue-500 focus:border-transparent hover:bg-gray-50 transition-colors"
+      >
+        <span className="truncate text-gray-800">
+          {selected.length === 0 ? placeholder : `${selected.length} selecionado${selected.length > 1 ? 's' : ''}`}
+        </span>
+        <svg className={`w-4 h-4 text-gray-600 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {isOpen && (
+        <div className="absolute z-20 mt-1 w-full max-h-60 overflow-auto bg-white border border-gray-300 rounded-md shadow-lg">
+          <div className="sticky top-0 p-2 border-b border-gray-200 bg-gray-50 z-10">
+            <div className="flex items-center justify-between">
+              <label className="flex items-center space-x-2 cursor-pointer hover:bg-gray-100 p-1 rounded transition-colors">
+                <input
+                  type="checkbox"
+                  checked={isAllSelected}
+                  ref={(input) => {
+                    if (input) input.indeterminate = isSomeSelected
+                  }}
+                  onChange={toggleAll}
+                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-sm font-medium text-gray-700">Selecionar todos</span>
+              </label>
+              {onApply && onRemove && (
+                <button
+                  onClick={() => {
+                    if (isApplied) {
+                      handleRemove()
+                    } else {
+                      handleApply()
+                    }
+                  }}
+                  className={`px-3 py-1 text-sm rounded transition-colors ${
+                    isApplied
+                      ? 'bg-red-600 text-white hover:bg-red-700'
+                      : 'bg-blue-600 text-white hover:bg-blue-700'
+                  }`}
+                >
+                  {isApplied ? 'Remover' : 'Aplicar'}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {options.length === 0 ? (
+            <div className="px-3 py-4 text-sm text-gray-500 text-center">Nenhuma opção disponível</div>
+          ) : (
+            <div className="py-1">
+              {options.map(option => (
+                <label
+                  key={option}
+                  className={`flex items-center space-x-2 px-3 py-2 cursor-pointer transition-colors ${
+                    selected.includes(option)
+                      ? 'bg-blue-50 hover:bg-blue-100'
+                      : 'hover:bg-gray-50'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(option)}
+                    onChange={() => toggleOption(option)}
+                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className={`text-sm ${selected.includes(option) ? 'font-semibold text-blue-700' : 'text-gray-800'}`}>
+                    {option}
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 // -------------------- Função para buscar todos os dados paginados --------------------
@@ -224,13 +363,21 @@ export default function ConsultaPortarias() {
   const [totalPaginas, setTotalPaginas] = useState(1)
   const [totalRegistros, setTotalRegistros] = useState(0)
 
-  // Estados: Filtros 
-  const [filtroAno, setFiltroAno] = useState<string>('')
-  const [filtroPortaria, setFiltroPortaria] = useState<string>('')
-  const [filtroTipo, setFiltroTipo] = useState<string>('')
-  const [filtroRegimento, setFiltroRegimento] = useState<string>('')
-  const [filtroRetificado, setFiltroRetificado] = useState<string>('')
-  const [filtroStatus, setFiltroStatus] = useState<string>('')
+  // ---------- ESTADOS DE FILTRO (valores temporários, apenas para UI) ----------
+  const [filtroAnosTemp, setFiltroAnosTemp] = useState<string[]>([])
+  const [filtroPortariasTemp, setFiltroPortariasTemp] = useState<string[]>([])
+  const [filtroTiposTemp, setFiltroTiposTemp] = useState<string[]>([])
+  const [filtroRegimentosTemp, setFiltroRegimentosTemp] = useState<string[]>([])
+  const [filtroRetificadosTemp, setFiltroRetificadosTemp] = useState<string[]>([])
+  const [filtroStatusTemp, setFiltroStatusTemp] = useState<string[]>([])
+
+  // ---------- ESTADOS DE FILTRO APLICADOS (usados na filtragem) ----------
+  const [filtroAnos, setFiltroAnos] = useState<string[]>([])
+  const [filtroPortarias, setFiltroPortarias] = useState<string[]>([])
+  const [filtroTipos, setFiltroTipos] = useState<string[]>([])
+  const [filtroRegimentos, setFiltroRegimentos] = useState<string[]>([])
+  const [filtroRetificados, setFiltroRetificados] = useState<string[]>([])
+  const [filtroStatusList, setFiltroStatusList] = useState<string[]>([])
 
   const [isClient, setIsClient] = useState(false)
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -249,7 +396,6 @@ export default function ConsultaPortarias() {
         setTodosRegistros(todos)
         setTotalRegistros(todos.length)
 
-        // Buscar a última data de atualização
         const { data: dataAtualizacao, error: errorAtualizacao } = await supabase
           .from('portarias_iphan')
           .select('updated_at')
@@ -317,7 +463,6 @@ export default function ConsultaPortarias() {
 
   // Função para calcular status
   const calcularStatus = (portaria: any) => {
-    // CONDIÇÃO: Verificar se é Revogado
     if (portaria.tipo && 
         normalizarTexto(portaria.tipo).includes('revogacao') && 
         portaria.link_revogado_dou && 
@@ -325,7 +470,6 @@ export default function ConsultaPortarias() {
       return 'Revogada'
     }
 
-    // Lógica original para Vigente/Expirada
     const dataExpiracao = portaria.data_expiracao
     if (!dataExpiracao || dataExpiracao.trim() === '') return 'Data não informada'
     
@@ -344,7 +488,6 @@ export default function ConsultaPortarias() {
     
     const vigente = dataExp > hoje
 
-    // NOVO STATUS: Vigente Retificado
     if (
       vigente &&
       Number(portaria.quantidade_retificado_dou) > 0 &&
@@ -388,188 +531,232 @@ export default function ConsultaPortarias() {
     })
   }, [])
 
-  // Aplicar filtros
-  const obterDadosFiltrados = useCallback((dados: any[]) => {
+  // Aplicar filtros (usa os estados aplicados)
+  const aplicarFiltros = useCallback((dados: any[]) => {
     let resultados = dados
 
-    // Filtro de Ano
-    if (filtroAno) {
-      resultados = resultados.filter(portaria => 
-        portaria.ano?.toString() === filtroAno || 
-        (filtroAno === 'NULL' && (portaria.ano === null || portaria.ano === undefined))
-      )
-    }
-
-    // Filtro de Portaria
-    if (filtroPortaria) {
+    if (filtroAnos.length > 0) {
       resultados = resultados.filter(portaria => {
-        const valorPortaria = portaria.portaria || ''
-        const valorNormalizado = normalizarTexto(valorPortaria)
-        const filtroNormalizado = normalizarTexto(filtroPortaria)
-        if (filtroPortaria === 'NULL') {
-          return !portaria.portaria || portaria.portaria.trim() === ''
-        }
-        return valorNormalizado.includes(filtroNormalizado)
+        const anoStr = portaria.ano?.toString() || ''
+        return filtroAnos.includes(anoStr)
       })
     }
 
-    // Filtro de Tipo
-    if (filtroTipo) {
+    if (filtroPortarias.length > 0) {
       resultados = resultados.filter(portaria => {
-        const valorTipo = portaria.tipo || ''
-        const valorNormalizado = normalizarTexto(valorTipo)
-        const filtroNormalizado = normalizarTexto(filtroTipo)
-        if (filtroTipo === 'NULL') {
-          return !portaria.tipo || portaria.tipo.trim() === ''
-        }
-        return valorNormalizado.includes(filtroNormalizado)
+        const valor = portaria.portaria || ''
+        const valorNormalizado = normalizarTexto(valor)
+        return filtroPortarias.some(filtro => {
+          const filtroNormalizado = normalizarTexto(filtro)
+          return valorNormalizado.includes(filtroNormalizado)
+        })
       })
     }
 
-    // Filtro de Regimento Normativo
-    if (filtroRegimento) {
+    if (filtroTipos.length > 0) {
       resultados = resultados.filter(portaria => {
-        const valorRegimento = portaria.regimento_normativo || ''
-        const valorNormalizado = normalizarTexto(valorRegimento)
-        const filtroNormalizado = normalizarTexto(filtroRegimento)
-        if (filtroRegimento === 'NULL') {
-          return !portaria.regimento_normativo || portaria.regimento_normativo.trim() === ''
-        }
-        return valorNormalizado.includes(filtroNormalizado)
+        const valor = portaria.tipo || ''
+        const valorNormalizado = normalizarTexto(valor)
+        return filtroTipos.some(filtro => {
+          const filtroNormalizado = normalizarTexto(filtro)
+          return valorNormalizado.includes(filtroNormalizado)
+        })
       })
     }
 
-        // Filtro de Retificação
-    if (filtroRetificado) {
+    if (filtroRegimentos.length > 0) {
       resultados = resultados.filter(portaria => {
-        const valorRetificado = portaria.retificado || ''
-        const valorNormalizado = normalizarTexto(valorRetificado)
-        const filtroNormalizado = normalizarTexto(filtroRetificado)
-        if (filtroRetificado === 'NULL') {
-          return !portaria.retificado || portaria.retificado.trim() === ''
-        }
-        return valorNormalizado.includes(filtroNormalizado)
+        const valor = portaria.regimento_normativo || ''
+        const valorNormalizado = normalizarTexto(valor)
+        return filtroRegimentos.some(filtro => {
+          const filtroNormalizado = normalizarTexto(filtro)
+          return valorNormalizado.includes(filtroNormalizado)
+        })
       })
     }
 
-    // Filtro de Status
-    if (filtroStatus) {
-      resultados = resultados.filter(portaria => calcularStatus(portaria) === filtroStatus)
+    if (filtroRetificados.length > 0) {
+      resultados = resultados.filter(portaria => {
+        const valor = portaria.retificado || ''
+        const valorNormalizado = normalizarTexto(valor)
+        return filtroRetificados.some(filtro => {
+          const filtroNormalizado = normalizarTexto(filtro)
+          return valorNormalizado.includes(filtroNormalizado)
+        })
+      })
+    }
+
+    if (filtroStatusList.length > 0) {
+      resultados = resultados.filter(portaria => {
+        const status = calcularStatus(portaria)
+        return filtroStatusList.includes(status)
+      })
     }
 
     return resultados
-  }, [filtroAno, filtroPortaria, filtroTipo, filtroRegimento, filtroRetificado, filtroStatus])
+  }, [filtroAnos, filtroPortarias, filtroTipos, filtroRegimentos, filtroRetificados, filtroStatusList])
 
-  // Atualizar dados filtrados quando base/filtros mudam
-useEffect(() => {
-  // 🔒 Se estiver no modo inicial E não houver interação do usuário, não faz nada
-  if (
-    modoInicial &&
-    !buscaAplicada &&
-    !filtroAno &&
-    !filtroPortaria &&
-    !filtroTipo &&
-    !filtroRegimento &&
-    !filtroRetificado &&
-    !filtroStatus
-  ) {
-    return
-  }
+  // ============================================================
+  // 🔧 EFEITO PRINCIPAL: Atualiza dadosFiltrados com base em todos os estados
+  // ============================================================
+  useEffect(() => {
+    // Caso 1: Modo inicial (sem busca e sem filtros)
+    const semBusca = !buscaAplicada
+    const semFiltros = 
+      filtroAnos.length === 0 &&
+      filtroPortarias.length === 0 &&
+      filtroTipos.length === 0 &&
+      filtroRegimentos.length === 0 &&
+      filtroRetificados.length === 0 &&
+      filtroStatusList.length === 0
 
-  // A partir daqui, já estamos em modo de consulta
-  setModoInicial(false)
-  setMostrandoTodos(true)
+    if (semBusca && semFiltros) {
+      if (modoInicial && !mostrandoTodos) return
 
-  let base = todosRegistros
+      if (mostrandoTodos) {
+        setDadosFiltrados(todosRegistros)
+        setTotalPaginas(Math.ceil(todosRegistros.length / itensPorPagina))
+        setPaginaAtual(1)
+        setModoInicial(false)
+        return
+      }
 
-  // Busca textual
-  if (buscaAplicada.trim()) {
-    base = aplicarBusca(buscaAplicada, base)
-  }
+      const registrosVigentes = portarias.filter(portaria => {
+        const status = calcularStatus(portaria)
+        return status === 'Vigente'
+      })
+      const registrosRecentes = registrosVigentes
+        .slice()
+        .sort((a, b) => {
+          const [diaA, mesA, anoA] = (a.data_publicacao_dou || '').split('/').map(Number)
+          const [diaB, mesB, anoB] = (b.data_publicacao_dou || '').split('/').map(Number)
+          const dataA = new Date(anoA || 0, (mesA || 1) - 1, diaA || 1)
+          const dataB = new Date(anoB || 0, (mesB || 1) - 1, diaB || 1)
+          return dataB.getTime() - dataA.getTime()
+        })
+        .slice(0, 5)
+      setDadosFiltrados(registrosRecentes)
+      setTotalPaginas(1)
+      setPaginaAtual(1)
+      setModoInicial(true)
+      setMostrandoTodos(false)
+      return
+    }
 
-  // Filtros refinados
-  const resultados = obterDadosFiltrados(base)
+    // Caso 2: Modo de consulta (com busca ou filtros)
+    setModoInicial(false)
+    setMostrandoTodos(true)
 
-  setDadosFiltrados(resultados)
-  setDadosFiltrados(resultados)
-  setPaginaAtual(1)
-  setTotalPaginas(Math.ceil(resultados.length / itensPorPagina))
-}, [
-  buscaAplicada,
-  buscaDisparada,
-  filtroAno,
-  filtroPortaria,
-  filtroTipo,
-  filtroRegimento,
-  filtroRetificado,
-  filtroStatus,
-  todosRegistros,
-  aplicarBusca,
-  obterDadosFiltrados,
-  itensPorPagina,
-  modoInicial
-])
+    let base = todosRegistros
+
+    if (buscaAplicada.trim()) {
+      base = aplicarBusca(buscaAplicada, base)
+    }
+
+    const resultados = aplicarFiltros(base)
+
+    setDadosFiltrados(resultados)
+    setPaginaAtual(1)
+    setTotalPaginas(Math.ceil(resultados.length / itensPorPagina))
+  }, [
+    buscaAplicada,
+    filtroAnos,
+    filtroPortarias,
+    filtroTipos,
+    filtroRegimentos,
+    filtroRetificados,
+    filtroStatusList,
+    todosRegistros,
+    portarias,
+    itensPorPagina,
+    modoInicial,
+    mostrandoTodos,
+    aplicarBusca,
+    aplicarFiltros,
+  ])
 
   // Ações de busca
-const executarBusca = () => {
-  setModoInicial(false)
-  setMostrandoTodos(true)
-  setBuscaAplicada(termoBuscaInput)
-  setBuscaDisparada(prev => prev + 1) // 👈 força atualização completa
-  setPaginaAtual(1)
-}
+  const executarBusca = () => {
+    setBuscaAplicada(termoBuscaInput)
+    setBuscaDisparada(prev => prev + 1)
+    setPaginaAtual(1)
+  }
 
   const limparBusca = () => {
-    setModoInicial(true)
-    setMostrandoTodos(false)
     setTermoBuscaInput('')
     setBuscaAplicada('')
     setPaginaAtual(1)
-    
-    // Restaurar exibição inicial de 5 registros
-    const registrosVigentes = portarias.filter(portaria => {
-      const status = calcularStatus(portaria)
-      return status === 'Vigente' || status === 'Vigente Retificado'
-    })
-
-    const registrosRecentes = registrosVigentes
-      .slice()
-      .sort((a, b) => {
-        const [diaA, mesA, anoA] = (a.data_publicacao_dou || '').split('/').map(Number)
-        const [diaB, mesB, anoB] = (b.data_publicacao_dou || '').split('/').map(Number)
-        const dataA = new Date(anoA || 0, (mesA || 1) - 1, diaA || 1)
-        const dataB = new Date(anoB || 0, (mesB || 1) - 1, diaB || 1)
-        return dataB.getTime() - dataA.getTime()
-      })
-      .slice(0, 5)
-
-    setDadosFiltrados(registrosRecentes)
-    setMostrandoTodos(false)
   }
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') executarBusca()
   }
 
-  // Limpar todos os filtros
-  const limparTodosFiltros = () => {
-    setFiltroAno('')
-    setFiltroPortaria('')
-    setFiltroTipo('')
-    setFiltroRegimento('')
-    setFiltroRetificado('')
-    setFiltroStatus('')
+  // Ações de filtro
+  const aplicarFiltrosHandler = () => {
+    // Copia os valores temporários para os aplicados
+    setFiltroAnos(filtroAnosTemp)
+    setFiltroPortarias(filtroPortariasTemp)
+    setFiltroTipos(filtroTiposTemp)
+    setFiltroRegimentos(filtroRegimentosTemp)
+    setFiltroRetificados(filtroRetificadosTemp)
+    setFiltroStatusList(filtroStatusTemp)
   }
 
-  // Carregar mais registros (Ver mais registros de portarias)
-const carregarMaisRegistros = () => {
-  setModoInicial(false)        // 👈 DESLIGA o modo inicial
-  setMostrandoTodos(true)
-  setDadosFiltrados(todosRegistros)  
-  setPaginaAtual(1)
-}
+  // Funções para remover filtro individual
+  const removerFiltroAno = () => {
+    setFiltroAnosTemp([])
+    setFiltroAnos([])
+  }
 
-  // Obter opções únicas para filtros
+  const removerFiltroPortaria = () => {
+    setFiltroPortariasTemp([])
+    setFiltroPortarias([])
+  }
+
+  const removerFiltroTipo = () => {
+    setFiltroTiposTemp([])
+    setFiltroTipos([])
+  }
+
+  const removerFiltroRegimento = () => {
+    setFiltroRegimentosTemp([])
+    setFiltroRegimentos([])
+  }
+
+  const removerFiltroRetificado = () => {
+    setFiltroRetificadosTemp([])
+    setFiltroRetificados([])
+  }
+
+  const removerFiltroStatus = () => {
+    setFiltroStatusTemp([])
+    setFiltroStatusList([])
+  }
+
+  const limparTodosFiltros = () => {
+    // Limpa os temporários
+    setFiltroAnosTemp([])
+    setFiltroPortariasTemp([])
+    setFiltroTiposTemp([])
+    setFiltroRegimentosTemp([])
+    setFiltroRetificadosTemp([])
+    setFiltroStatusTemp([])
+    // Limpa os aplicados
+    setFiltroAnos([])
+    setFiltroPortarias([])
+    setFiltroTipos([])
+    setFiltroRegimentos([])
+    setFiltroRetificados([])
+    setFiltroStatusList([])
+  }
+
+  // Carregar mais registros (Ver mais)
+  const carregarMaisRegistros = () => {
+    setMostrandoTodos(true)
+  }
+
+  // Funções auxiliares para obter opções únicas a partir dos dados filtrados (cascata)
   const obterValoresUnicos = useCallback((dados: any[], campo: string) => {
     const valoresProcessados = dados
       .map(item => item[campo])
@@ -581,33 +768,27 @@ const carregarMaisRegistros = () => {
   }, [])
 
   const obterOpcoesFiltro = useCallback(() => {
-    const dadosParaAno = obterDadosFiltrados(dadosFiltrados)
-    const anos = [...new Set(dadosParaAno.map((item: any) => item.ano).filter((ano: any) => ano != null))].sort((a: number, b: number) => b - a)
-    
-    const dadosParaPortaria = obterDadosFiltrados(dadosFiltrados)
-    const portariasFiltro = obterValoresUnicos(dadosParaPortaria, 'portaria')
-    
-    const dadosParaTipo = obterDadosFiltrados(dadosFiltrados)
-    const tipos = obterValoresUnicos(dadosParaTipo, 'tipo')
-    
-    const dadosParaRegimento = obterDadosFiltrados(dadosFiltrados)
-    const regimentos = obterValoresUnicos(dadosParaRegimento, 'regimento_normativo')
+    const base = dadosFiltrados.length > 0 ? dadosFiltrados : todosRegistros
 
-    const dadosParaRetificado = obterDadosFiltrados(dadosFiltrados)
-    const retificados = obterValoresUnicos(dadosParaRetificado, 'retificado')
-    
+    const anos = [...new Set(base.map((item: any) => item.ano).filter((ano: any) => ano != null))]
+      .sort((a: number, b: number) => b - a)
+      .map(String)
+
+    const portariasFiltro = obterValoresUnicos(base, 'portaria')
+    const tipos = obterValoresUnicos(base, 'tipo')
+    const regimentos = obterValoresUnicos(base, 'regimento_normativo')
+    const retificados = obterValoresUnicos(base, 'retificado')
+
     return { anos, portariasFiltro, tipos, regimentos, retificados }
-  }, [dadosFiltrados, obterDadosFiltrados, obterValoresUnicos])
+  }, [dadosFiltrados, todosRegistros, obterValoresUnicos])
+
+  const obterOpcoesStatus = useCallback(() => {
+    const base = dadosFiltrados.length > 0 ? dadosFiltrados : todosRegistros
+    const statusUnicos = [...new Set(base.map(portaria => calcularStatus(portaria)))].sort()
+    return statusUnicos
+  }, [dadosFiltrados, todosRegistros])
 
   const { anos, portariasFiltro, tipos, regimentos, retificados } = obterOpcoesFiltro()
-
-  // Obter opções de status
-  const obterOpcoesStatus = useCallback(() => {
-    const dadosParaStatus = obterDadosFiltrados(dadosFiltrados)
-    const statusUnicos = [...new Set(dadosParaStatus.map(portaria => calcularStatus(portaria)))].sort()
-    return statusUnicos
-  }, [dadosFiltrados, obterDadosFiltrados])
-
   const opcoesStatus = obterOpcoesStatus()
 
   // Exportação
@@ -618,7 +799,7 @@ const carregarMaisRegistros = () => {
         nome: `portarias_busca_${buscaAplicada.replace(/[^a-zA-Z0-9]/g, '_')}_${new Date().toISOString().split('T')[0]}.csv`
       }
     }
-    if (filtroAno || filtroPortaria || filtroTipo || filtroRegimento || filtroRetificado || filtroStatus) {
+    if (filtroAnos.length > 0 || filtroPortarias.length > 0 || filtroTipos.length > 0 || filtroRegimentos.length > 0 || filtroRetificados.length > 0 || filtroStatusList.length > 0) {
       return {
         dados: dadosFiltrados,
         nome: `portarias_filtradas_${new Date().toISOString().split('T')[0]}.csv`
@@ -642,20 +823,14 @@ const carregarMaisRegistros = () => {
   }
 
   // UI: paginação/colunas
-const irParaPagina = (paginaOpcional?: number) => {
-  const pagina = paginaOpcional ?? Number(paginaInput)
-
-  if (
-    !pagina ||
-    pagina < 1 ||
-    pagina > totalPaginas
-  ) {
-    alert(`Informe uma página entre 1 e ${totalPaginas}`)
-    return
+  const irParaPagina = (paginaOpcional?: number) => {
+    const pagina = paginaOpcional ?? Number(paginaInput)
+    if (!pagina || pagina < 1 || pagina > totalPaginas) {
+      alert(`Informe uma página entre 1 e ${totalPaginas}`)
+      return
+    }
+    setPaginaAtual(pagina)
   }
-
-  setPaginaAtual(pagina)
-}
 
   const avancarPagina = () => { if (paginaAtual < totalPaginas) setPaginaAtual(paginaAtual + 1) }
   const voltarPagina = () => { if (paginaAtual > 1) setPaginaAtual(paginaAtual - 1) }
@@ -673,7 +848,6 @@ const irParaPagina = (paginaOpcional?: number) => {
       return <span className="text-gray-500">N/A</span>
     }
 
-    // ✅ Renderização especial para múltiplas retificações
     if (colunaId === 'ultimo_link_retificado_dou') {
       const links = valor
         .split(',')
@@ -700,7 +874,6 @@ const irParaPagina = (paginaOpcional?: number) => {
       )
     }
 
-    // ✅ Renderização normal de links únicos
     if (
       colunaId === 'link_portaria_dou' ||
       colunaId === 'ultimo_link_retificado_dou' ||
@@ -725,7 +898,6 @@ const irParaPagina = (paginaOpcional?: number) => {
     return valor
   }
 
-  // Função para obter a classe CSS do status
   const obterClasseStatus = (status: string) => {
     switch (status) {
       case 'Vigente':
@@ -741,7 +913,6 @@ const irParaPagina = (paginaOpcional?: number) => {
     }
   }
 
-  // Gerar botões de paginação
   const gerarBotoesPagina = () => {
     const botoes = []
     const maxBotoes = 5
@@ -772,7 +943,6 @@ const irParaPagina = (paginaOpcional?: number) => {
     return botoes
   }
 
-  // Obter colunas ordenadas para exibição
   const getColunasOrdenadasParaExibicao = () => {
     const colunasOrdenadas: {id: string, nome: string}[] = [];
     
@@ -788,6 +958,23 @@ const irParaPagina = (paginaOpcional?: number) => {
     
     return colunasOrdenadas;
   }
+
+  // Verificar se há filtros temporários ou aplicados
+  const temFiltrosAplicados = 
+    filtroAnos.length > 0 ||
+    filtroPortarias.length > 0 ||
+    filtroTipos.length > 0 ||
+    filtroRegimentos.length > 0 ||
+    filtroRetificados.length > 0 ||
+    filtroStatusList.length > 0
+
+  const temFiltrosTemp = 
+    filtroAnosTemp.length > 0 ||
+    filtroPortariasTemp.length > 0 ||
+    filtroTiposTemp.length > 0 ||
+    filtroRegimentosTemp.length > 0 ||
+    filtroRetificadosTemp.length > 0 ||
+    filtroStatusTemp.length > 0
 
   if (carregando || !isClient) {
     return (
@@ -906,107 +1093,96 @@ const irParaPagina = (paginaOpcional?: number) => {
               <h3 className="text-lg font-semibold text-gray-900">
                 Refine o resultado da busca por filtragem:
               </h3>
-              {(filtroAno || filtroPortaria || filtroTipo || filtroRegimento || filtroRetificado || filtroStatus) && (
-                <button
-                  onClick={limparTodosFiltros}
-                  className="px-3 py-1 text-sm bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
-                >
-                  Limpar filtros
-                </button>
-              )}
+              <div className="flex gap-2">
+                {/* Mostra "Limpar seleções" apenas se houver seleções temporárias E não houver filtros aplicados */}
+                {temFiltrosTemp && !temFiltrosAplicados && (
+                  <button
+                    onClick={() => {
+                      setFiltroAnosTemp([])
+                      setFiltroPortariasTemp([])
+                      setFiltroTiposTemp([])
+                      setFiltroRegimentosTemp([])
+                      setFiltroRetificadosTemp([])
+                      setFiltroStatusTemp([])
+                    }}
+                    className="px-3 py-1 text-sm bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
+                  >
+                    Limpar seleções
+                  </button>
+                )}
+                {temFiltrosAplicados && (
+                  <button
+                    onClick={limparTodosFiltros}
+                    className="px-3 py-1 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+                  >
+                    Remover filtros
+                  </button>
+                )}
+              </div>
             </div>
-            <div className="grid grid-cols-6 gap-2 items-center">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Ano</label>
-                <select
-                  value={filtroAno}
-                  onChange={(e) => setFiltroAno(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
-                >
-                  <option value="">Todos</option>
-                  {anos.map(ano => (
-                    <option key={ano} value={ano}>{ano}</option>
-                  ))}
-                </select>
-              </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Portaria</label>
-                <select
-                  value={filtroPortaria}
-                  onChange={(e) => setFiltroPortaria(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
-                >
-                  <option value="">Todas</option>
-                  {portariasFiltro.map(portaria => (
-                    <option key={portaria} value={portaria === 'Não informado' ? 'NULL' : portaria}>
-                      {portaria}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Tipo</label>
-                <select
-                  value={filtroTipo}
-                  onChange={(e) => setFiltroTipo(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
-                >
-                  <option value="">Todos</option>
-                  {tipos.map(tipo => (
-                    <option key={tipo} value={tipo === 'Não informado' ? 'NULL' : tipo}>
-                      {tipo}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Regimento Normativo</label>
-                <select
-                  value={filtroRegimento}
-                  onChange={(e) => setFiltroRegimento(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
-                >
-                  <option value="">Todos</option>
-                  {regimentos.map(regimento => (
-                    <option key={regimento} value={regimento === 'Não informado' ? 'NULL' : regimento}>
-                      {regimento}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Portaria Retificada?</label>
-                <select
-                  value={filtroRetificado}
-                  onChange={(e) => setFiltroRetificado(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
-                >
-                  <option value="">Todos</option>
-                  {retificados.map(retificado => (
-                    <option key={retificado} value={retificado === 'Não informado' ? 'NULL' : retificado}>
-                      {retificado}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
-                <select
-                  value={filtroStatus}
-                  onChange={(e) => setFiltroStatus(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
-                >
-                  <option value="">Todos</option>
-                  {opcoesStatus.map(status => (
-                    <option key={status} value={status}>{status}</option>
-                  ))}
-                </select>
-              </div>
+            {/* Filtros (dropdowns) */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 items-start">
+              <MultiSelectDropdown
+                label="Ano"
+                options={anos}
+                selected={filtroAnosTemp}
+                onChange={setFiltroAnosTemp}
+                onApply={aplicarFiltrosHandler}
+                onRemove={removerFiltroAno}
+                isApplied={filtroAnos.length > 0}
+                placeholder="Selecione anos"
+              />
+              <MultiSelectDropdown
+                label="Portaria"
+                options={portariasFiltro}
+                selected={filtroPortariasTemp}
+                onChange={setFiltroPortariasTemp}
+                onApply={aplicarFiltrosHandler}
+                onRemove={removerFiltroPortaria}
+                isApplied={filtroPortarias.length > 0}
+                placeholder="Selecione portarias"
+              />
+              <MultiSelectDropdown
+                label="Tipo"
+                options={tipos}
+                selected={filtroTiposTemp}
+                onChange={setFiltroTiposTemp}
+                onApply={aplicarFiltrosHandler}
+                onRemove={removerFiltroTipo}
+                isApplied={filtroTipos.length > 0}
+                placeholder="Selecione tipos"
+              />
+              <MultiSelectDropdown
+                label="Regimento Normativo"
+                options={regimentos}
+                selected={filtroRegimentosTemp}
+                onChange={setFiltroRegimentosTemp}
+                onApply={aplicarFiltrosHandler}
+                onRemove={removerFiltroRegimento}
+                isApplied={filtroRegimentos.length > 0}
+                placeholder="Selecione regimentos"
+              />
+              <MultiSelectDropdown
+                label="Portaria Retificada?"
+                options={retificados}
+                selected={filtroRetificadosTemp}
+                onChange={setFiltroRetificadosTemp}
+                onApply={aplicarFiltrosHandler}
+                onRemove={removerFiltroRetificado}
+                isApplied={filtroRetificados.length > 0}
+                placeholder="Selecione"
+              />
+              <MultiSelectDropdown
+                label="Status"
+                options={opcoesStatus}
+                selected={filtroStatusTemp}
+                onChange={setFiltroStatusTemp}
+                onApply={aplicarFiltrosHandler}
+                onRemove={removerFiltroStatus}
+                isApplied={filtroStatusList.length > 0}
+                placeholder="Selecione status"
+              />
             </div>
           </div>
         </div>
@@ -1146,7 +1322,7 @@ const irParaPagina = (paginaOpcional?: number) => {
                       const quantidade = dados.length
                       if (buscaAplicada && buscaAplicada.trim() !== '') {
                         return `Exportar resultados da busca (${quantidade} registros)`
-                      } else if (filtroAno || filtroPortaria || filtroTipo || filtroRegimento || filtroRetificado || filtroStatus) {
+                      } else if (temFiltrosAplicados) {
                         return `Exportar resultados filtrados (${quantidade} registros)`
                       } else if (mostrandoTodos) {
                         return `Exportar todos os dados (${quantidade} registros)`
@@ -1157,7 +1333,7 @@ const irParaPagina = (paginaOpcional?: number) => {
                   </button>
                 )}
 
-                {!mostrandoTodos && !buscaAplicada && !filtroAno && !filtroPortaria && !filtroTipo && !filtroRegimento && !filtroRetificado && !filtroStatus && (
+                {!mostrandoTodos && !buscaAplicada && !temFiltrosAplicados && (
                   <button
                     onClick={carregarMaisRegistros}
                     className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm"
