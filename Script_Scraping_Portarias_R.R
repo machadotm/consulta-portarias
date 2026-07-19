@@ -815,4 +815,3 @@ upsert_to_supabase(
   table_name = "portarias_iphan",
   unique_col = "chave_composta",
   ignore_duplicates = TRUE)
-

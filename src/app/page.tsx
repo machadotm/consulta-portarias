@@ -21,9 +21,9 @@ const todasColunas = [
   { id: 'n_autorizacao', nome: 'Nº da Autorização' },
   { id: 'tipo', nome: 'Tipo' },
   { id: 'regimento_normativo', nome: 'Regimento Normativo' },
-  { id: 'retificado', nome: 'Portaria Retificada?' },
+  { id: 'retificado', nome: 'Autorização Retificada?' },
   { id: 'processo', nome: 'Processo' },
-  { id: 'enquadramento_in', nome: 'Enquadramento IN' },  
+  { id: 'enquadramento_in', nome: 'Enquadramento IN' },
   { id: 'empreendedor', nome: 'Empreendedor' },
   { id: 'empreendimento', nome: 'Empreendimento' },
   { id: 'projeto', nome: 'Projeto' },
@@ -35,7 +35,7 @@ const todasColunas = [
   { id: 'prazo_validade', nome: 'Prazo de Validade' },
   { id: 'data_expiracao', nome: 'Data de Expiração' },
   { id: 'link_portaria_dou', nome: 'Link da Portaria no DOU' },
-  { id: 'quantidade_retificado_dou', nome: 'Quantidade de Retificações da Portaria no DOU' },
+  { id: 'quantidade_retificado_dou', nome: 'Quantidade de Retificações no DOU' },
   { id: 'ultimo_link_retificado_dou', nome: 'Link de Retificações no DOU' },
   { id: 'portaria_revogada', nome: 'Portaria Revogada' },
   { id: 'link_revogado_dou', nome: 'Link da Revogação no DOU' },
@@ -66,15 +66,48 @@ const normalizarTexto = (texto: string): string => {
     .trim()
 }
 
+// Comparador NUMÉRICO para valores de "Portaria" ("Portaria nº N/AAAA").
+// Ordena do mais recente para o mais antigo: ano decrescente e, dentro do mesmo
+// ano, número decrescente (23, 22 ... 2, 1), em vez da ordem alfabética padrão.
+// Valores fora do padrão caem para o fim, ordenados alfabeticamente entre si.
+const compararPortarias = (a: string, b: string): number => {
+  const parse = (s: string) => {
+    const m = String(s).match(/(\d+)\s*\/\s*(\d{4})/)
+    return m ? { num: parseInt(m[1], 10), ano: parseInt(m[2], 10) } : null
+  }
+  const pa = parse(a)
+  const pb = parse(b)
+  if (pa && pb) {
+    if (pa.ano !== pb.ano) return pb.ano - pa.ano
+    return pb.num - pa.num
+  }
+  if (pa) return -1
+  if (pb) return 1
+  return a.localeCompare(b, 'pt-BR')
+}
+
+// ---------- BUSCA POR ASPAS (correspondência exata de palavra) ----------
+// Escapa caracteres especiais de regex para uso literal no padrão.
+const escaparRegex = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+// Detecta se o termo inteiro está entre aspas (retas " ou tipográficas “ ” « »
+// e apóstrofos) e devolve o conteúdo interno; caso contrário, retorna null.
+// Ex.: '"lucia"' -> 'lucia' ; 'lucia' -> null
+const extrairTermoExato = (termo: string): string | null => {
+  const t = termo.trim()
+  const m = t.match(/^["“”«»'‘’]([\s\S]+)["“”«»'‘’]$/)
+  return m ? m[1].trim() : null
+}
+
 // Componente para renderizar links clicáveis
 const RenderizarLink = ({ url, texto }: { url: string, texto: string }) => {
   if (!url || !url.startsWith('http')) {
     return <span className="text-gray-500">N/A</span>
   }
   return (
-    <a 
-      href={url} 
-      target="_blank" 
+    <a
+      href={url}
+      target="_blank"
       rel="noopener noreferrer"
       className="text-blue-600 hover:text-blue-800 underline transition-colors"
       onClick={(e) => e.stopPropagation()}
@@ -110,9 +143,9 @@ const exportarParaCSV = (dados: any[], colunasSelecionadas: string[], todasColun
   const linhas = dados.map(portaria => {
     return colunasOrdenadas.map(colunaId => {
       if (colunaId === 'status_portaria') {
-        if (portaria.tipo && 
-            normalizarTexto(portaria.tipo).includes('revogacao') && 
-            portaria.link_revogado_dou && 
+        if (portaria.tipo &&
+            normalizarTexto(portaria.tipo).includes('revogacao') &&
+            portaria.link_revogado_dou &&
             portaria.link_revogado_dou.trim() !== '') {
           return 'Revogada'
         }
@@ -166,15 +199,15 @@ interface MultiSelectDropdownProps {
   placeholder?: string
 }
 
-const MultiSelectDropdown = ({ 
-  label, 
-  options, 
-  selected, 
-  onChange, 
-  onApply, 
+const MultiSelectDropdown = ({
+  label,
+  options,
+  selected,
+  onChange,
+  onApply,
   onRemove,
   isApplied = false,
-  placeholder = 'Selecione...' 
+  placeholder = 'Selecione...'
 }: MultiSelectDropdownProps) => {
   const [isOpen, setIsOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
@@ -354,9 +387,8 @@ export default function ConsultaPortarias() {
   const [dataAtualizacao, setDataAtualizacao] = useState<string>('')
   const [mostrandoTodos, setMostrandoTodos] = useState(false)
   const [modoInicial, setModoInicial] = useState(true)
-  const [buscaDisparada, setBuscaDisparada] = useState(0)
   const [paginaInput, setPaginaInput] = useState('')
-  
+
   // Estados: Paginação
   const [paginaAtual, setPaginaAtual] = useState(1)
   const [itensPorPagina] = useState(100)
@@ -386,39 +418,50 @@ export default function ConsultaPortarias() {
     setIsClient(true)
   }, [])
 
-  // Carregar todos os dados
-  useEffect(() => {
-    const buscarDados = async () => {
-      try {
-        setCarregando(true)
-        const todos = await buscarTodosDados()
-        setPortarias(todos)
-        setTodosRegistros(todos)
-        setTotalRegistros(todos.length)
+  // Carrega toda a base do Supabase. Extraído para useCallback e chamado na
+  // montagem do componente.
+  const carregarDados = useCallback(async () => {
+    try {
+      setCarregando(true)
+      const todos = await buscarTodosDados()
+      setPortarias(todos)
+      setTodosRegistros(todos)
+      setTotalRegistros(todos.length)
 
-        const { data: dataAtualizacao, error: errorAtualizacao } = await supabase
-          .from('portarias_iphan')
-          .select('updated_at')
-          .order('updated_at', { ascending: false })
-          .limit(1)
+      // Renomeado: evita sombrear o state 'dataAtualizacao'
+      const { data: atualizacaoRows, error: errorAtualizacao } = await supabase
+        .from('portarias_iphan')
+        .select('updated_at')
+        .order('updated_at', { ascending: false })
+        .limit(1)
 
-        if (!errorAtualizacao && dataAtualizacao && dataAtualizacao.length > 0) {
-          const dataUTC = new Date(dataAtualizacao[0].updated_at)
-          const dataBrasilia = new Date(dataUTC.getTime() - 3 * 60 * 60 * 1000)
-          const dia = dataBrasilia.getUTCDate().toString().padStart(2, '0')
-          const mes = (dataBrasilia.getUTCMonth() + 1).toString().padStart(2, '0')
-          const ano = dataBrasilia.getUTCFullYear()
-          setDataAtualizacao(`${dia}/${mes}/${ano}`)
+      if (!errorAtualizacao && atualizacaoRows && atualizacaoRows.length > 0) {
+        const dataUTC = new Date(atualizacaoRows[0].updated_at)
+        // Só formata se a data for válida; extrai APENAS a data (sem hora) no
+        // fuso de São Paulo. Isso remove a hora do cálculo e dispensa o ajuste
+        // manual de -3h, que era frágil e podia "voltar um dia" em atualizações
+        // feitas na madrugada.
+        if (!isNaN(dataUTC.getTime())) {
+          const fmt = new Intl.DateTimeFormat('pt-BR', {
+            timeZone: 'America/Sao_Paulo',
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric'
+          })
+          setDataAtualizacao(fmt.format(dataUTC))
         }
-      } catch (err) {
-        console.error('Erro ao carregar dados:', err)
-      } finally {
-        setCarregando(false)
       }
+    } catch (err) {
+      console.error('Erro ao carregar dados:', err)
+    } finally {
+      setCarregando(false)
     }
-
-    buscarDados()
   }, [])
+
+  // Carregar todos os dados na montagem (com spinner de tela cheia)
+  useEffect(() => {
+    carregarDados()
+  }, [carregarDados])
 
   // Exibição inicial - 5 registros mais recentes com status Vigente
   useEffect(() => {
@@ -451,7 +494,7 @@ export default function ConsultaPortarias() {
     if (mostrandoTodos || buscaAplicada) {
       const total = Math.ceil(dadosFiltrados.length / itensPorPagina)
       setTotalPaginas(total)
-      
+
       const inicio = (paginaAtual - 1) * itensPorPagina
       const fim = inicio + itensPorPagina
       setDadosExibicao(dadosFiltrados.slice(inicio, fim))
@@ -459,33 +502,33 @@ export default function ConsultaPortarias() {
       setDadosExibicao(dadosFiltrados)
     }
   }, [dadosFiltrados, paginaAtual, itensPorPagina, mostrandoTodos, buscaAplicada])
-  
+
 
   // Função para calcular status
   const calcularStatus = (portaria: any) => {
-    if (portaria.tipo && 
-        normalizarTexto(portaria.tipo).includes('revogacao') && 
-        portaria.link_revogado_dou && 
+    if (portaria.tipo &&
+        normalizarTexto(portaria.tipo).includes('revogacao') &&
+        portaria.link_revogado_dou &&
         portaria.link_revogado_dou.trim() !== '') {
       return 'Revogada'
     }
 
     const dataExpiracao = portaria.data_expiracao
     if (!dataExpiracao || dataExpiracao.trim() === '') return 'Data não informada'
-    
+
     const regexData = /^(\d{2})\/(\d{2})\/(\d{4})$/
     const match = dataExpiracao.match(regexData)
-    
+
     if (!match) return 'Formato inválido'
-    
+
     const dia = parseInt(match[1])
     const mes = parseInt(match[2]) - 1
     const ano = parseInt(match[3])
     const dataExp = new Date(ano, mes, dia)
-    
+
     const hoje = new Date()
     hoje.setHours(0, 0, 0, 0)
-    
+
     const vigente = dataExp > hoje
 
     if (
@@ -500,14 +543,18 @@ export default function ConsultaPortarias() {
     return vigente ? 'Vigente' : 'Expirada'
   }
 
-  // Busca textual nos dados já carregados
+  // Busca textual nos dados já carregados.
+  // - Sem aspas: busca GLOBAL (parcial, includes) em TODOS os campos — padrão.
+  // - Com o termo entre aspas ("lucia"): busca RESTRITA por PALAVRA INTEIRA,
+  //   ignorando acento e maiúsc./minúsc., APENAS nas colunas de arqueólogos
+  //   (Coordenadores e de Campo). Retorna "lucia"/"lúcia" mas não
+  //   "Luciana"/"Luciano". Hífen conta como separador (casa "Lucia-Mirim").
   const aplicarBusca = useCallback((termo: string, dados: any[]) => {
     if (!termo.trim()) return dados
-    
-    const termoNormalizado = normalizarTexto(termo)
-    
-    return dados.filter(portaria => {
-      const camposBusca = [
+
+    // Texto de TODOS os campos (usado na busca global, sem aspas).
+    const montarTextoGlobal = (portaria: any) =>
+      normalizarTexto([
         portaria.portaria,
         portaria.data_publicacao_dou,
         portaria.processo,
@@ -522,13 +569,28 @@ export default function ConsultaPortarias() {
         portaria.tipo,
         portaria.regimento_normativo,
         portaria.enquadramento_in
-      ]
-        .filter(Boolean)
-        .join(' ')
-      
-      const textoNormalizado = normalizarTexto(camposBusca)
-      return textoNormalizado.includes(termoNormalizado)
-    })
+      ].filter(Boolean).join(' '))
+
+    // Texto SOMENTE das colunas de arqueólogos (usado na busca restrita, aspas).
+    const montarTextoArqueologos = (portaria: any) =>
+      normalizarTexto([
+        portaria.arqueologos_coordenadores,
+        portaria.arqueologos_campo
+      ].filter(Boolean).join(' '))
+
+    const termoExato = extrairTermoExato(termo)
+
+    // Modo restrito (entre aspas): palavra inteira via \b, só nos arqueólogos.
+    if (termoExato !== null) {
+      const alvo = normalizarTexto(termoExato)
+      if (!alvo) return dados // aspas vazias -> não restringe
+      const regexExato = new RegExp(`\\b${escaparRegex(alvo)}\\b`)
+      return dados.filter(portaria => regexExato.test(montarTextoArqueologos(portaria)))
+    }
+
+    // Modo global (sem aspas): correspondência parcial em todos os campos.
+    const termoNormalizado = normalizarTexto(termo)
+    return dados.filter(portaria => montarTextoGlobal(portaria).includes(termoNormalizado))
   }, [])
 
   // Aplicar filtros (usa os estados aplicados)
@@ -602,7 +664,7 @@ export default function ConsultaPortarias() {
   useEffect(() => {
     // Caso 1: Modo inicial (sem busca e sem filtros)
     const semBusca = !buscaAplicada
-    const semFiltros = 
+    const semFiltros =
       filtroAnos.length === 0 &&
       filtroPortarias.length === 0 &&
       filtroTipos.length === 0 &&
@@ -678,7 +740,6 @@ export default function ConsultaPortarias() {
   // Ações de busca
   const executarBusca = () => {
     setBuscaAplicada(termoBuscaInput)
-    setBuscaDisparada(prev => prev + 1)
     setPaginaAtual(1)
   }
 
@@ -688,7 +749,8 @@ export default function ConsultaPortarias() {
     setPaginaAtual(1)
   }
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
+  // onKeyDown (onKeyPress está depreciado no React)
+  const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') executarBusca()
   }
 
@@ -757,14 +819,16 @@ export default function ConsultaPortarias() {
   }
 
   // Funções auxiliares para obter opções únicas a partir dos dados filtrados (cascata)
-  const obterValoresUnicos = useCallback((dados: any[], campo: string) => {
+  const obterValoresUnicos = useCallback((dados: any[], campo: string, comparador?: (a: string, b: string) => number) => {
     const valoresProcessados = dados
       .map(item => item[campo])
       .map(valor => !valor || valor.toString().trim() === '' ? 'Não informado' : valor.toString().trim())
     const valoresUnicos = [...new Set(valoresProcessados)]
     const naoInformado = valoresUnicos.filter(v => v === 'Não informado')
-    const outros = valoresUnicos.filter(v => v !== 'Não informado').sort()
-    return [...naoInformado, ...outros]
+    const outros = valoresUnicos.filter(v => v !== 'Não informado')
+    // Usa o comparador informado (ex.: numérico p/ portarias) ou o sort padrão.
+    const ordenados = comparador ? outros.sort(comparador) : outros.sort()
+    return [...naoInformado, ...ordenados]
   }, [])
 
   const obterOpcoesFiltro = useCallback(() => {
@@ -774,7 +838,7 @@ export default function ConsultaPortarias() {
       .sort((a: number, b: number) => b - a)
       .map(String)
 
-    const portariasFiltro = obterValoresUnicos(base, 'portaria')
+    const portariasFiltro = obterValoresUnicos(base, 'portaria', compararPortarias)
     const tipos = obterValoresUnicos(base, 'tipo')
     const regimentos = obterValoresUnicos(base, 'regimento_normativo')
     const retificados = obterValoresUnicos(base, 'retificado')
@@ -874,9 +938,10 @@ export default function ConsultaPortarias() {
       )
     }
 
+    // 'ultimo_link_retificado_dou' já foi tratado e retornou acima,
+    // por isso não aparece mais nesta lista.
     if (
       colunaId === 'link_portaria_dou' ||
-      colunaId === 'ultimo_link_retificado_dou' ||
       colunaId === 'link_revogado_dou'
     ) {
       if (valor.startsWith('http')) {
@@ -886,9 +951,7 @@ export default function ConsultaPortarias() {
             texto={
               colunaId === 'link_portaria_dou'
                 ? 'Ver portaria'
-                : colunaId === 'link_revogado_dou'
-                ? 'Ver revogação'
-                : 'Ver retificação'
+                : 'Ver revogação'
             }
           />
         )
@@ -916,14 +979,14 @@ export default function ConsultaPortarias() {
   const gerarBotoesPagina = () => {
     const botoes = []
     const maxBotoes = 5
-    
+
     let inicio = Math.max(1, paginaAtual - Math.floor(maxBotoes / 2))
     let fim = Math.min(totalPaginas, inicio + maxBotoes - 1)
-    
+
     if (fim - inicio + 1 < maxBotoes) {
       inicio = Math.max(1, fim - maxBotoes + 1)
     }
-    
+
     for (let i = inicio; i <= fim; i++) {
       botoes.push(
         <button
@@ -939,28 +1002,28 @@ export default function ConsultaPortarias() {
         </button>
       )
     }
-    
+
     return botoes
   }
 
   const getColunasOrdenadasParaExibicao = () => {
     const colunasOrdenadas: {id: string, nome: string}[] = [];
-    
+
     if (colunasSelecionadas.includes('status_portaria')) {
       colunasOrdenadas.push({ id: 'status_portaria', nome: 'Status' });
     }
-    
+
     todasColunas.forEach(coluna => {
       if (colunasSelecionadas.includes(coluna.id) && coluna.id !== 'status_portaria') {
         colunasOrdenadas.push(coluna);
       }
     });
-    
+
     return colunasOrdenadas;
   }
 
   // Verificar se há filtros temporários ou aplicados
-  const temFiltrosAplicados = 
+  const temFiltrosAplicados =
     filtroAnos.length > 0 ||
     filtroPortarias.length > 0 ||
     filtroTipos.length > 0 ||
@@ -968,13 +1031,22 @@ export default function ConsultaPortarias() {
     filtroRetificados.length > 0 ||
     filtroStatusList.length > 0
 
-  const temFiltrosTemp = 
+  const temFiltrosTemp =
     filtroAnosTemp.length > 0 ||
     filtroPortariasTemp.length > 0 ||
     filtroTiposTemp.length > 0 ||
     filtroRegimentosTemp.length > 0 ||
     filtroRetificadosTemp.length > 0 ||
     filtroStatusTemp.length > 0
+
+  // Retorna true quando o filtro está aplicado E a seleção temporária é idêntica
+  // à aplicada (comparação como conjunto, ignora ordem). Usado no botão do
+  // dropdown: se for true mostra "Remover"; se o usuário mexeu na seleção
+  // (marcou/desmarcou), passa a false e o botão volta para "Aplicar".
+  const filtroInalterado = (temp: string[], aplicado: string[]) =>
+    aplicado.length > 0 &&
+    temp.length === aplicado.length &&
+    temp.every(v => aplicado.includes(v))
 
   if (carregando || !isClient) {
     return (
@@ -991,7 +1063,7 @@ export default function ConsultaPortarias() {
   return (
     <div className="min-h-screen bg-gray-50 py-4 sm:py-6 lg:py-8 px-2 sm:px-4 lg:px-6">
       <div className="max-w-full mx-auto">
-        
+
         {/* Cabeçalho */}
         <div className="text-center mb-6 sm:mb-8">
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-2 px-2">
@@ -1002,16 +1074,16 @@ export default function ConsultaPortarias() {
           </p>
           <p className="text-gray-900 text-sm sm:text-base px-2">
             Para consultar dados anteriores a 06/11/2025 - {' '}
-            <a 
-              href="https://banco-portarias-cna.vercel.app/" 
-              target="_blank" 
+            <a
+              href="https://banco-portarias-cna.vercel.app/"
+              target="_blank"
               rel="noopener noreferrer"
               className="text-blue-600 hover:text-blue-800 underline"
             >
               Ver banco de portarias
             </a>
           </p>
-          <p className="text-gray-600 text-sm sm:text-base px-2">            
+          <p className="text-gray-600 text-sm sm:text-base px-2">
             Busque e filtre as informações de acordo com suas necessidades
           </p>
         </div>
@@ -1026,7 +1098,7 @@ export default function ConsultaPortarias() {
                   placeholder="🔍 Buscar por nome de arqueólogos, processos, projetos, municípios..."
                   value={termoBuscaInput}
                   onChange={(e) => setTermoBuscaInput(e.target.value)}
-                  onKeyPress={handleKeyPress}
+                  onKeyDown={handleKeyDown}
                   className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
                 />
                 <button
@@ -1054,6 +1126,9 @@ export default function ConsultaPortarias() {
                     {' '}- Buscando por: "{buscaAplicada}" - encontrado {dadosFiltrados.length} registros
                   </span>
                 )}
+              </p>
+              <p className="text-xs text-gray-500 mt-1">
+                Dica: use aspas para busca exata pelo nome do(a) arqueólogo(a) — ex.: <span className="font-mono">&quot;lucia&quot;</span> retorna Lucia/Lúcia, mas não Luciana.
               </p>
             </div>
           </div>
@@ -1130,7 +1205,7 @@ export default function ConsultaPortarias() {
                 onChange={setFiltroAnosTemp}
                 onApply={aplicarFiltrosHandler}
                 onRemove={removerFiltroAno}
-                isApplied={filtroAnos.length > 0}
+                isApplied={filtroInalterado(filtroAnosTemp, filtroAnos)}
                 placeholder="Selecione anos"
               />
               <MultiSelectDropdown
@@ -1140,7 +1215,7 @@ export default function ConsultaPortarias() {
                 onChange={setFiltroPortariasTemp}
                 onApply={aplicarFiltrosHandler}
                 onRemove={removerFiltroPortaria}
-                isApplied={filtroPortarias.length > 0}
+                isApplied={filtroInalterado(filtroPortariasTemp, filtroPortarias)}
                 placeholder="Selecione portarias"
               />
               <MultiSelectDropdown
@@ -1150,7 +1225,7 @@ export default function ConsultaPortarias() {
                 onChange={setFiltroTiposTemp}
                 onApply={aplicarFiltrosHandler}
                 onRemove={removerFiltroTipo}
-                isApplied={filtroTipos.length > 0}
+                isApplied={filtroInalterado(filtroTiposTemp, filtroTipos)}
                 placeholder="Selecione tipos"
               />
               <MultiSelectDropdown
@@ -1160,17 +1235,17 @@ export default function ConsultaPortarias() {
                 onChange={setFiltroRegimentosTemp}
                 onApply={aplicarFiltrosHandler}
                 onRemove={removerFiltroRegimento}
-                isApplied={filtroRegimentos.length > 0}
+                isApplied={filtroInalterado(filtroRegimentosTemp, filtroRegimentos)}
                 placeholder="Selecione regimentos"
               />
               <MultiSelectDropdown
-                label="Portaria Retificada?"
+                label="Autorização Retificada?"
                 options={retificados}
                 selected={filtroRetificadosTemp}
                 onChange={setFiltroRetificadosTemp}
                 onApply={aplicarFiltrosHandler}
                 onRemove={removerFiltroRetificado}
-                isApplied={filtroRetificados.length > 0}
+                isApplied={filtroInalterado(filtroRetificadosTemp, filtroRetificados)}
                 placeholder="Selecione"
               />
               <MultiSelectDropdown
@@ -1180,7 +1255,7 @@ export default function ConsultaPortarias() {
                 onChange={setFiltroStatusTemp}
                 onApply={aplicarFiltrosHandler}
                 onRemove={removerFiltroStatus}
-                isApplied={filtroStatusList.length > 0}
+                isApplied={filtroInalterado(filtroStatusTemp, filtroStatusList)}
                 placeholder="Selecione status"
               />
             </div>
@@ -1190,7 +1265,7 @@ export default function ConsultaPortarias() {
         {/* Tabela de Resultados */}
         <div className="bg-white rounded-lg shadow overflow-hidden mx-2 sm:mx-0">
           <div className="overflow-x-auto">
-            <div 
+            <div
               ref={bodyRef}
               className="overflow-x-auto"
               style={{ maxHeight: 'calc(100vh - 400px)', overflow: 'auto' }}
@@ -1199,8 +1274,8 @@ export default function ConsultaPortarias() {
                 <thead className="bg-gray-50 sticky top-0 z-10">
                   <tr>
                     {getColunasOrdenadasParaExibicao().map(coluna => (
-                      <th 
-                        key={coluna.id} 
+                      <th
+                        key={coluna.id}
                         className="px-4 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap bg-gray-50"
                         style={{ minWidth: '120px' }}
                       >
@@ -1213,8 +1288,8 @@ export default function ConsultaPortarias() {
                   {dadosExibicao.map((portaria) => (
                     <tr key={portaria[PRIMARY_KEY]} className="hover:bg-gray-50">
                       {getColunasOrdenadasParaExibicao().map(coluna => (
-                        <td 
-                          key={coluna.id} 
+                        <td
+                          key={coluna.id}
                           className="px-4 sm:px-6 py-4 whitespace-nowrap text-sm text-gray-900"
                           style={{ minWidth: '120px' }}
                         >
@@ -1239,7 +1314,7 @@ export default function ConsultaPortarias() {
           {/* ÁREA DE CONTROLE - Contador, Paginação e Exportação */}
           <div className="bg-gray-50 px-4 sm:px-6 py-4 border-t border-gray-200">
             <div className="flex flex-col md:flex-row justify-between items-center gap-4">
-              
+
               {/* Informações de paginação */}
               <div className="text-sm text-gray-700">
                 {mostrandoTodos || buscaAplicada ? (
@@ -1265,35 +1340,30 @@ export default function ConsultaPortarias() {
                         >
                           Próximo
                         </button>
-                             <span>
-                              Ir para página                         
-                            </span>
-                          <input                            
-                            min="1"
-                            max={totalPaginas}
-                            value={paginaInput}
-                            onChange={e => setPaginaInput(e.target.value)}
-                              onKeyDown={e => {                                
-                                if (e.key === 'Enter') {
-                                  irParaPagina()
-                                }
-                              }}
-                            className="w-10 border rounded px-2 py-1"                            
-                          />
-                          <button
-                            type="button"
-                            onClick={() => irParaPagina()}
-                            className="
-                              border
-                              rounded
-                              px-3
-                              py-1
-                              text-sm
-                              hover:bg-gray-100
-                            "
-                          >
-                            Ir
-                          </button>
+                        <span>
+                          Ir para página
+                        </span>
+                        <input
+                          type="number"
+                          inputMode="numeric"
+                          min="1"
+                          max={totalPaginas}
+                          value={paginaInput}
+                          onChange={e => setPaginaInput(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') {
+                              irParaPagina()
+                            }
+                          }}
+                          className="w-16 border rounded px-2 py-1"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => irParaPagina()}
+                          className="border rounded px-3 py-1 text-sm hover:bg-gray-100"
+                        >
+                          Ir
+                        </button>
                       </div>
                     )}
                   </div>
@@ -1350,7 +1420,7 @@ export default function ConsultaPortarias() {
         <div className="mt-6 sm:mt-8 text-center text-gray-500 text-sm px-2">
           <p>
             Última atualização: {dataAtualizacao || 'Carregando...'}
-            </p>          
+          </p>
         </div>
       </div>
     </div>
