@@ -1,4 +1,90 @@
-# Instalação de bibliotecas
+# ============================================================================
+# scrape_portarias.R
+# ============================================================================
+# PROPÓSITO
+#   Web scraping de Portarias do IPHAN publicadas no Diário Oficial da União
+#   (in.gov.br). Extrai, de cada portaria, os itens de autorização/permissão/
+#   renovação de pesquisa arqueológica listados nos ANEXOS, estruturando-os em
+#   um tibble (uma linha por item) e acumulando os resultados entre execuções
+#   em um dataframe no ambiente global.
+#
+# USO
+#   links <- c("https://www.in.gov.br/web/dou/-/portaria-n-63-de-6-de-julho-...")
+#   df <- scrape_portarias(links)                  # execução normal (silenciosa)
+#   df <- scrape_portarias(links, verbose = TRUE)  # com log detalhado p/ depurar
+#
+#   Exportação para Excel sem quebrar acentos (UTF-8 com BOM):
+#     readr::write_excel_csv(df, "portarias.csv")
+#
+# PARÂMETROS
+#   links          vetor de URLs de portarias no DOU (in.gov.br)
+#   projeto_col    mantido por compatibilidade com versões antigas; NÃO é usado
+#   accumulate_var nome (string) da variável global onde o resultado acumula
+#                  entre execuções (default "df_portarias_acumulado"); execuções
+#                  novas são combinadas com as anteriores via bind_rows+distinct
+#   verbose        TRUE liga o log passo-a-passo (cat) de todas as sub-funções
+#
+# SAÍDA (colunas, todas minúsculas)
+#   portaria, data_publicacao_dou, anexo, n_autorizacao, tipo,
+#   regimento_normativo, processo, retificado, enquadramento_in, empreendedor,
+#   empreendimento, projeto, arqueologos_coordenadores, arqueologos_campo,
+#   apoio_institucional, municipios_abrangencias, estados_abrangencias,
+#   prazo_validade, data_expiracao, link_portaria_dou,
+#   quantidade_retificado_dou, ultimo_link_retificado_dou, link_revogado_dou,
+#   chave_composta (= portaria + "_" + processo), portaria_revogada (NA),
+#   ano (extraído de data_publicacao_dou, posições 7-10 de dd/mm/aaaa)
+#
+# ARQUITETURA (fluxo por link)
+#   read_dou_page()          baixa a página em UTF-8 (User-Agent + retry)
+#   [xpath //*  -> linhas]   texto de todos os elementos, na ordem do documento
+#   slice: "Diário Oficial da União" ... "REPORTAR ERRO"
+#   extract_dou_date()       data de publicação (dd/mm/aaaa)
+#   extract_portaria()       "Portaria nº N/AAAA" a partir do <title> ou corpo
+#   ANEXO I..N               blocos delimitados por "^ANEXO <romano>"
+#     extract_annex_items()  itens "^NN - ..." até linha terminada em mês/ano
+#     parse_item_fields()    campos do item (processo, empreendedor, etc.)
+#     split_area()           separa municípios e estados da Área de Abrangência
+#   extract_tipo_regime_by_roman()  Tipo e Regimento por seção romana "Expedir"
+#   compute_expiration()     data_expiracao = data_publicacao + prazo
+#
+# DECISÕES DE PROJETO IMPORTANTES (não "consertar" sem ler!)
+#   * ENCODING: a página é UTF-8; ler com encoding="UTF-8" e nunca converter
+#     para latin1. repair_mojibake() é só rede de segurança condicional — corrige
+#     apenas texto que apresente o padrão Ã/Â+byte alto (UTF-8 lido como Latin1).
+#   * CAMPOS DE ITEM usam captura (.+?) delimitada pelos RÓTULOS seguintes no
+#     lookahead, porque valores reais contêm ';' (ex.: "SEINFRA - ...; J.A ...").
+#     EXCEÇÃO: em Regimento_Normativo o ';' é o TERMINADOR da cláusula romana,
+#     então lá o [^;]+ é intencional (ver comentário na função).
+#   * ESTADOS na Área de Abrangência: captura e remoção ANCORADAS no nome
+#     oficial (alternação, nomes mais longos primeiro). Isso evita: perder
+#     estados sem vírgula após o nome ("Paraíba e municípios de Araçoiaba"),
+#     tratar municípios homônimos ("Espírito Santo"/RN) ou compostos
+#     ("Ceará-Mirim") como estados, e "Mato Grosso do Sul" virar "Mato Grosso".
+#     O fallback (varredura de nomes soltos) SÓ roda se nada foi encontrado.
+#   * Siglas UF anexadas ao município ("Nova Ubiratã-MT", "Rio Verde/GO") são
+#     resolvidas via uf_map e removidas do nome do município.
+#   * DEDUPE de arqueólogos: o DOU às vezes repete a mesma linha de coordenador/
+#     campo; valores idênticos não são anexados duas vezes.
+#   * ACUMULAÇÃO: cada execução é combinada com o dataframe de execuções
+#     anteriores (accumulate_var no ambiente global) via bind_rows + distinct.
+#     Todas as colunas já saem minúsculas, então não há conflito de grafia.
+#
+# MANUTENÇÃO — COMO ADICIONAR VARIANTES DE ARQUEÓLOGO
+#   As listas coord_labels / campo_labels (em parse_item_fields) guardam UMA
+#   variante por linha, contendo SÓ o rótulo (o texto antes dos dois-pontos).
+#   O sufixo comum de captura (aut_tail) é aplicado via paste0. Ao ver uma
+#   grafia nova no DOU, adicione apenas o rótulo na lista adequada.
+#
+# LIMITAÇÕES CONHECIDAS
+#   * Erros de digitação da fonte não são adivinhados: "Estado do Goías" (typo
+#     real do DOU) resulta em estados_abrangencias = NA de propósito.
+#   * roman_sections filtra linhas via //*, que inclui elementos-contêiner com
+#     o documento inteiro; a extração de Tipo/Regimento funciona nelas porque
+#     os padrões param no primeiro match/';' (não alterar essa premissa).
+#   * quantidade_retificado_dou, ultimo_link_retificado_dou, link_revogado_dou
+#     e portaria_revogada são criadas vazias (NA) para preenchimento externo.
+#
+# DEPENDÊNCIAS
 library(rvest)
 library(xml2)
 library(httr)
@@ -7,13 +93,12 @@ library(dplyr)
 library(purrr)
 library(tibble)
 library(lubridate)
-
-# `%||%` vem de rlang/purrr; se não estiver disponível, defina o fallback abaixo.
+# `%||%` vem de rlang/purrr; fallback caso não esteja disponível no ambiente:
 if (!exists("%||%")) `%||%` <- function(a, b) if (is.null(a) || length(a) == 0) b else a
 # ============================================================================
 
 scrape_portarias <- function(links,
-                             projeto_col = "Projeto", # mantido por compat.; não é usado
+                             projeto_col = "Projeto",           # mantido por compat.; não é usado
                              accumulate_var = "df_portarias_acumulado",
                              verbose = FALSE) {
   
@@ -189,6 +274,10 @@ scrape_portarias <- function(links,
     NA_character_
   }
   
+  # Recorta o cabeçalho da página: da linha "Diário Oficial da União" até a
+  # linha de assinatura ("O Diretor"/"A Diretora"). Se algum marcador faltar,
+  # usa o início do conteúdo e um teto de 50 linhas. É deste trecho que sai a
+  # data de publicação.
   slice_header <- function(lines) {
     start_idx <- which(str_detect(lines, regex("^Diário Oficial da União", ignore_case = TRUE)))[1]
     end_idx   <- which(str_detect(lines, regex("^(O\\s+Diretor|A\\s+Diretora|O\\s+Diretora|A\\s+Diretor)\\b", ignore_case = TRUE)))[1]
@@ -197,6 +286,11 @@ scrape_portarias <- function(links,
     lines[start_idx:end_idx]
   }
   
+  # Divide as linhas de um ANEXO em itens. Cada item começa em "^NN - ..."
+  # (número de dois dígitos) e termina na primeira linha subsequente que
+  # encerra com uma unidade de prazo ("... meses", "... anos", com ponto e/ou
+  # parêntese finais opcionais). Sem terminador, aplica um teto de 20 linhas
+  # para o item não engolir o resto do anexo.
   extract_annex_items <- function(annex_lines) {
     starts <- which(str_detect(annex_lines, "^\\d{2}\\s*-\\s*"))
     if (length(starts) == 0) return(list())
@@ -357,7 +451,12 @@ scrape_portarias <- function(links,
           if (!is.na(m[1])) {
             value <- str_squish(m[, 2])
             if (!is.na(value) && value != "") {
-              coord_val <- ifelse(is.na(coord_val), value, paste(coord_val, value, sep = "; "))
+              # Dedupe: o DOU às vezes repete a mesma linha (ex.: item com
+              # "Arqueólogo Coordenador: X" duas vezes) — não anexa valor repetido.
+              ja_tem <- !is.na(coord_val) && value %in% str_split(coord_val, ";\\s*")[[1]]
+              if (!ja_tem) {
+                coord_val <- ifelse(is.na(coord_val), value, paste(coord_val, value, sep = "; "))
+              }
               matched_raw <- c(matched_raw, ln); break
             }
           }
@@ -369,7 +468,10 @@ scrape_portarias <- function(links,
           if (!is.na(m[1])) {
             value <- str_squish(m[, 2])
             if (!is.na(value) && value != "") {
-              campo_val <- ifelse(is.na(campo_val), value, paste(campo_val, value, sep = "; "))
+              ja_tem <- !is.na(campo_val) && value %in% str_split(campo_val, ";\\s*")[[1]]
+              if (!ja_tem) {
+                campo_val <- ifelse(is.na(campo_val), value, paste(campo_val, value, sep = "; "))
+              }
               matched_raw <- c(matched_raw, ln); break
             }
           }
@@ -381,23 +483,29 @@ scrape_portarias <- function(links,
     if (length(matched_raw) > 0) cleaned_lines <- cleaned_lines[!cleaned_lines %in% matched_raw]
     cleaned <- paste(cleaned_lines, collapse = " ")
     
-    # Enquadramento
-    enqu_raw <- str_match(cleaned, regex("(?:Enquadramento\\s+IN|Enquadramento):\\s*([^;]+?)(?=\\s+(?:Empreendedor|Responsável pelo empreendimento):|\\s+Empreendimento:|\\s+Projeto:|\\s+(?:Apoio|Endosso)\\s+Institucional:|\\s+Área\\s+de\\s+Abrangência:|\\s+Prazo\\s+de\\s+Validade:|$)", ignore_case = TRUE))[, 2]
+    # Enquadramento: mesma correção do Empreendedor — .+? em vez de [^;]+?,
+    # pois o valor também pode conter ';' quando há excesso/erro de pontuação
+    # na fonte do DOU.
+    enqu_raw <- str_match(cleaned, regex("(?:Enquadramento\\s+IN|Enquadramento):\\s*(.+?)(?=\\s+(?:Empreendedor|Responsável pelo empreendimento):|\\s+Empreendimento:|\\s+Projeto:|\\s+(?:Apoio|Endosso)\\s+Institucional:|\\s+Área\\s+de\\s+Abrangência:|\\s+Prazo\\s+de\\s+Validade:|$)", ignore_case = TRUE))[, 2]
     enqu <- if (!is.na(enqu_raw)) str_remove(enqu_raw, regex("\\s+\\bProcesso\\b\\s+n?\\.?\\s*º?:?.*$", ignore_case = TRUE)) %>% str_squish() else NA_character_
     
     if (!is.na(enqu)) {
-      padrao_remover_enqu <- regex("(?:Enquadramento\\s+IN|Enquadramento):\\s*([^;]+?)(?=\\s+(?:Empreendedor|Responsável pelo empreendimento):|\\s+Empreendimento:|\\s+Projeto:|\\s+(?:Apoio|Endosso)\\s+Institucional:|\\s+Área\\s+de\\s+Abrangência:|\\s+Prazo\\s+de\\s+Validade:|$)", ignore_case = TRUE)
+      padrao_remover_enqu <- regex("(?:Enquadramento\\s+IN|Enquadramento):\\s*.+?(?=\\s+(?:Empreendedor|Responsável pelo empreendimento):|\\s+Empreendimento:|\\s+Projeto:|\\s+(?:Apoio|Endosso)\\s+Institucional:|\\s+Área\\s+de\\s+Abrangência:|\\s+Prazo\\s+de\\s+Validade:|$)", ignore_case = TRUE)
       cleaned <- str_remove(cleaned, padrao_remover_enqu) %>% str_squish()
     }
     
-    empr <- str_match(cleaned, regex("(?:Empreendedor|Responsável pelo empreendimento):\\s*([^;]+?)(?=\\s+Empreendimento:|\\s+Processo|\\s+Projeto:|\\s+(?:Apoio|Endosso)\\s+Institucional:|\\s+Área\\s+de\\s+Abrangência:|\\s+Prazo\\s+de\\s+Validade:|$)", ignore_case = TRUE))[, 2]
+    # Empreendedor: usa .+? (delimitado pelos rótulos do lookahead) em vez de
+    # [^;]+?, pois o valor pode conter ';' (ex.: "SEINFRA - ...; J.A ... LTDA.")
+    empr <- str_match(cleaned, regex("(?:Empreendedor|Responsável pelo empreendimento):\\s*(.+?)(?=\\s+Empreendimento:|\\s+Processo|\\s+Projeto:|\\s+(?:Apoio|Endosso)\\s+Institucional:|\\s+Área\\s+de\\s+Abrangência:|\\s+Prazo\\s+de\\s+Validade:|$)", ignore_case = TRUE))[, 2]
     if (!is.na(empr)) {
-      padrao_remover_empr <- regex("(?:Empreendedor|Responsável pelo empreendimento):\\s*[^;]+?(?=\\s+Empreendimento:|\\s+Processo|\\s+Projeto:|\\s+(?:Apoio|Endosso)\\s+Institucional:|\\s+Área\\s+de\\s+Abrangência:|\\s+Prazo\\s+de\\s+Validade:|$)", ignore_case = TRUE)
+      padrao_remover_empr <- regex("(?:Empreendedor|Responsável pelo empreendimento):\\s*.+?(?=\\s+Empreendimento:|\\s+Processo|\\s+Projeto:|\\s+(?:Apoio|Endosso)\\s+Institucional:|\\s+Área\\s+de\\s+Abrangência:|\\s+Prazo\\s+de\\s+Validade:|$)", ignore_case = TRUE)
       cleaned <- str_remove(cleaned, padrao_remover_empr) %>% str_squish()
     }
     
-    empd  <- str_match(cleaned, regex("Empreendimento:\\s*([^;]+?)(?=\\s+(?:Responsável pelo empreendimento):|\\s+Processo|\\s+Projeto:|\\s+(?:Apoio|Endosso)\\s+Institucional:|\\s+Área\\s+de\\s+Abrangência:|\\s+Prazo\\s+de\\s+Validade:|$)", ignore_case = TRUE))[, 2]
-    apoio <- str_match(cleaned, regex("(?:Apoio|Endosso)\\s+Institucional:\\s*([^;]+?)(?=\\s+Área\\s+de\\s+Abrangência:|\\s+Prazo\\s+de\\s+Validade:|$)", ignore_case = TRUE))[, 2]
+    # Empreendimento e Apoio_Institucional: mesma correção (.+? no lugar de
+    # [^;]+?), para tolerar ';' dentro do valor.
+    empd  <- str_match(cleaned, regex("Empreendimento:\\s*(.+?)(?=\\s+(?:Responsável pelo empreendimento):|\\s+Processo|\\s+Projeto:|\\s+(?:Apoio|Endosso)\\s+Institucional:|\\s+Área\\s+de\\s+Abrangência:|\\s+Prazo\\s+de\\s+Validade:|$)", ignore_case = TRUE))[, 2]
+    apoio <- str_match(cleaned, regex("(?:Apoio|Endosso)\\s+Institucional:\\s*(.+?)(?=\\s+Área\\s+de\\s+Abrangência:|\\s+Prazo\\s+de\\s+Validade:|$)", ignore_case = TRUE))[, 2]
     
     area <- NA_character_
     area_patterns <- c(
@@ -418,11 +526,12 @@ scrape_portarias <- function(links,
     }
     
     prazo <- NA_character_
+    # Mesma correção: .+ em vez de [^;]+, para tolerar ';' no valor do prazo.
     prazo_patterns <- c(
-      "Prazo\\s+de\\s+Validade\\s*:\\s*([^;]+)$",
-      "Prazo\\s+da\\s+Validade\\s*:\\s*([^;]+)$",
-      "Prazo\\s+da\\s+portaria\\s*:\\s*([^;]+)$",
-      "Prazo\\s+Validade\\s*:\\s*([^;]+)$"
+      "Prazo\\s+de\\s+Validade\\s*:\\s*(.+)$",
+      "Prazo\\s+da\\s+Validade\\s*:\\s*(.+)$",
+      "Prazo\\s+da\\s+portaria\\s*:\\s*(.+)$",
+      "Prazo\\s+Validade\\s*:\\s*(.+)$"
     )
     for (pattern in prazo_patterns) {
       match <- str_match(cleaned, regex(pattern, ignore_case = TRUE))
@@ -431,7 +540,8 @@ scrape_portarias <- function(links,
     
     proj <- NA_character_
     if (str_detect(cleaned, regex("Projeto:\\s*", ignore_case = TRUE))) {
-      proj <- str_match(cleaned, regex("Projeto:\\s*([^;]+?)(?=\\s+(?:Responsável pelo empreendimento):|\\s+(?:Apoio|Endosso)\\s+Institucional:|\\s+Área\\s+de\\s+Abrangência:|\\s+Prazo\\s+de\\s+Validade:|$)", ignore_case = TRUE))[, 2]
+      # Mesma correção: .+? em vez de [^;]+?, para tolerar ';' no valor.
+      proj <- str_match(cleaned, regex("Projeto:\\s*(.+?)(?=\\s+(?:Responsável pelo empreendimento):|\\s+(?:Apoio|Endosso)\\s+Institucional:|\\s+Área\\s+de\\s+Abrangência:|\\s+Prazo\\s+de\\s+Validade:|$)", ignore_case = TRUE))[, 2]
     }
     
     tibble(
@@ -462,6 +572,18 @@ scrape_portarias <- function(links,
                              "Rio Grande do Norte", "Rio Grande do Sul", "Rondônia",
                              "Roraima", "Santa Catarina", "São Paulo", "Sergipe", "Tocantins")
     
+    # Mapa de siglas UF -> nome do estado. Usado para resolver casos em que a
+    # fonte traz só a sigla anexada ao município (ex.: "Nova Ubiratã-MT",
+    # "Rio Verde/GO"), sem o texto "Estado de ...".
+    uf_map <- c(AC = "Acre", AL = "Alagoas", AP = "Amapá", AM = "Amazonas", BA = "Bahia",
+                CE = "Ceará", DF = "Distrito Federal", ES = "Espírito Santo", GO = "Goiás",
+                MA = "Maranhão", MT = "Mato Grosso", MS = "Mato Grosso do Sul",
+                MG = "Minas Gerais", PA = "Pará", PB = "Paraíba", PR = "Paraná",
+                PE = "Pernambuco", PI = "Piauí", RJ = "Rio de Janeiro", RN = "Rio Grande do Norte",
+                RS = "Rio Grande do Sul", RO = "Rondônia", RR = "Roraima", SC = "Santa Catarina",
+                SP = "São Paulo", SE = "Sergipe", TO = "Tocantins")
+    uf_suffix_re <- paste0("\\s*[-/]\\s*(", paste(names(uf_map), collapse = "|"), ")\\b")
+    
     area_content <- NA_character_
     area_patterns <- c(
       "(?i)Área\\s+de\\s+Abrangência\\s*:\\s*(.+)",
@@ -474,53 +596,70 @@ scrape_portarias <- function(links,
     }
     if (is.na(area_content)) area_content <- s
     
-    # 1. Estados na ordem correta
+    # 1. Estados na ordem correta — captura ANCORADA no nome oficial do estado.
+    # Motivos (casos reais do DOU):
+    #   - "Estado da Paraíba e municípios de Araçoiaba" não tem vírgula após o
+    #     estado; capturar [^,;.|]+ engolia "Paraíba e municípios de Araçoiaba"
+    #     e perdia o estado.
+    #   - Ancorar evita que municípios homônimos ("Espírito Santo" no RN) ou
+    #     compostos ("Ceará-Mirim") virem estado, pois exigimos a palavra
+    #     "estado(s)" antes do nome.
+    # Alternação com nomes mais longos primeiro (Mato Grosso do Sul antes de
+    # Mato Grosso; Rio Grande do X antes de Rio de Janeiro não conflita, mas a
+    # ordenação por tamanho garante o match correto em todos os pares).
+    estados_por_tamanho <- estados_brasileiros[order(-nchar(estados_brasileiros))]
+    estados_alt <- paste(estados_por_tamanho, collapse = "|")
+    padrao_estado_ancorado <- paste0("(?:no[s]?\\s+)?[Ee]stados?\\s+(?:d[oae]s?\\s+)?(", estados_alt, ")\\b")
+    
     estados_ordenados <- character(0)
-    texto_trabalho <- area_content
-    padroes_estado <- c(
-      "no Estado do\\s+([^,;.|]+(?:\\s+[^,;.|]+)*)", "no Estado de\\s+([^,;.|]+(?:\\s+[^,;.|]+)*)", "no Estado da\\s+([^,;.|]+(?:\\s+[^,;.|]+)*)",
-      "nos Estados do\\s+([^,;.|]+(?:\\s+[^,;.|]+)*)", "nos Estados de\\s+([^,;.|]+(?:\\s+[^,;.|]+)*)", "nos Estados da\\s+([^,;.|]+(?:\\s+[^,;.|]+)*)",
-      "Estado do\\s+([^,;.|]+(?:\\s+[^,;.|]+)*)", "Estado de\\s+([^,;.|]+(?:\\s+[^,;.|]+)*)", "Estado da\\s+([^,;.|]+(?:\\s+[^,;.|]+)*)",
-      "estado do\\s+([^,;.|]+(?:\\s+[^,;.|]+)*)", "estado de\\s+([^,;.|]+(?:\\s+[^,;.|]+)*)", "estado da\\s+([^,;.|]+(?:\\s+[^,;.|]+)*)",
-      "Distrito Federal"
-    )
-    while (nchar(texto_trabalho) > 0) {
-      estado_encontrado <- NA_character_
-      melhor_match <- ""; melhor_posicao <- Inf
-      for (padrao in padroes_estado) {
-        regex_padrao <- regex(padrao, ignore_case = TRUE)
-        match_pos <- str_locate(texto_trabalho, regex_padrao)
-        if (!is.na(match_pos[1]) && match_pos[1] < melhor_posicao) {
-          melhor_posicao <- match_pos[1]
-          match_texto <- str_match(texto_trabalho, regex_padrao)
-          melhor_match <- match_texto[1, 1]
-          if (padrao == "Distrito Federal") {
-            estado_encontrado <- "Distrito Federal"
-          } else {
-            estado_limpo <- match_texto[1, 2] %>% str_squish() %>%
-              str_replace_all("^(o|a|os|as|no|Estado|estado)\\s+", "") %>% str_squish()
-            if (estado_limpo %in% estados_brasileiros) estado_encontrado <- estado_limpo
-          }
+    hits <- str_match_all(area_content, regex(padrao_estado_ancorado, ignore_case = TRUE))[[1]]
+    if (nrow(hits) > 0) {
+      for (h in hits[, 2]) {
+        # normaliza para a grafia oficial (o match é case-insensitive)
+        oficial <- estados_brasileiros[tolower(estados_brasileiros) == tolower(h)][1]
+        if (!is.na(oficial) && !oficial %in% estados_ordenados) {
+          estados_ordenados <- c(estados_ordenados, oficial)
         }
       }
-      if (!is.na(estado_encontrado)) {
-        if (!estado_encontrado %in% estados_ordenados) estados_ordenados <- c(estados_ordenados, estado_encontrado)
-        texto_trabalho <- str_sub(texto_trabalho, melhor_posicao + nchar(melhor_match))
-      } else break
     }
-    for (estado in estados_brasileiros) {
-      if (str_detect(area_content, regex(paste0("\\b", estado, "\\b"), ignore_case = TRUE)) &&
-          !estado %in% estados_ordenados) estados_ordenados <- c(estados_ordenados, estado)
+    if (str_detect(area_content, "Distrito Federal") &&
+        !"Distrito Federal" %in% estados_ordenados) {
+      estados_ordenados <- c(estados_ordenados, "Distrito Federal")
+    }
+    
+    # Fallback (varredura de nomes soltos) SOMENTE quando nada foi encontrado.
+    # Antes ele rodava sempre e inseria ruído: "Espírito Santo" (município do
+    # RN) e "Ceará" (de "Ceará-Mirim") entravam como estados.
+    if (length(estados_ordenados) == 0) {
+      for (estado in estados_brasileiros) {
+        if (str_detect(area_content, regex(paste0("\\b", estado, "\\b"), ignore_case = TRUE))) {
+          estados_ordenados <- c(estados_ordenados, estado)
+        }
+      }
     }
     estados_ordenados <- estados_ordenados[!sapply(estados_ordenados, function(e) {
       any(e != estados_ordenados & str_detect(estados_ordenados, fixed(e)))
     })]
+    
+    # NOVO: resolve UF abreviada anexada (ex.: "-MT", "/GO"). Passo aditivo —
+    # só acrescenta estados que o fluxo normal não pegou.
+    uf_hits <- str_match_all(area_content, "[-/]\\s*([A-Z]{2})\\b")[[1]]
+    if (nrow(uf_hits) > 0) {
+      for (sig in uf_hits[, 2]) {
+        if (sig %in% names(uf_map)) {
+          est <- uf_map[[sig]]
+          if (!est %in% estados_ordenados) estados_ordenados <- c(estados_ordenados, est)
+        }
+      }
+    }
     
     # 2. Municípios
     texto_limpo <- area_content %>%
       str_replace_all("(?i)Prazo\\s+(?:da\\s+)?portaria\\s*:\\s*[^.]+\\.?", "") %>%
       str_replace_all("(?i)Prazo\\s+de\\s+validade\\s*:\\s*[^.]+\\.?", "") %>%
       str_replace_all("(?i)Área\\s+de\\s+Abrangência\\s*:\\s*", "") %>%
+      # NOVO: remove sigla UF anexada (-MT, /GO) para não poluir o nome do município
+      str_replace_all(uf_suffix_re, "") %>%
       str_squish()
     
     blocos <- texto_limpo %>% str_split("(;|\\|)") %>% unlist() %>%
@@ -529,20 +668,20 @@ scrape_portarias <- function(links,
     todos_municipios <- character(0)
     for (bloco in blocos) {
       bloco_limpo <- bloco
-      padroes_prefixo_remover <- c(
-        "(?i)no Estado do\\s+[^,;.|]+", "(?i)no Estado de\\s+[^,;.|]+", "(?i)no Estado da\\s+[^,;.|]+",
-        "(?i)nos Estados do\\s+[^,;.|]+", "(?i)nos Estados de\\s+[^,;.|]+", "(?i)nos Estados da\\s+[^,;.|]+",
-        "(?i)Estado do\\s+[^,;.|]+", "(?i)Estado de\\s+[^,;.|]+", "(?i)Estado da\\s+[^,;.|]+",
-        "(?i)estado do\\s+[^,;.|]+", "(?i)estado de\\s+[^,;.|]+", "(?i)estado da\\s+[^,;.|]+",
-        "(?i)Município de\\s+", "(?i)Municípios de\\s+", "(?i)município de\\s+", "(?i)municípios de\\s+",
-        "Distrito Federal"
-      )
-      for (padrao in padroes_prefixo_remover) bloco_limpo <- str_remove_all(bloco_limpo, padrao)
+      # Remoção de estado ANCORADA no nome oficial. O padrão antigo
+      # "no Estado da\\s+[^,;.|]+" engolia texto além do estado quando não
+      # havia vírgula ("no Estado da Paraíba e municípios de Araçoiaba" perdia
+      # Araçoiaba). Agora removemos exatamente "no(s) Estado(s) do/da/de <NOME>".
+      bloco_limpo <- str_remove_all(bloco_limpo,
+                                    regex(padrao_estado_ancorado, ignore_case = TRUE))
+      bloco_limpo <- str_remove_all(bloco_limpo, "Distrito Federal")
+      # Prefixo de município: cobre "de/do/da/dos/das" (fix: "Município do Rio
+      # de Janeiro" virava "do Rio de Janeiro") e também a forma sem preposição
+      # ("Municípios Brejinho, ...", que ocorre no DOU).
+      bloco_limpo <- str_remove_all(bloco_limpo,
+                                    regex("Munic[íi]pios?\\s+(?:d[oae]s?\\s+)?", ignore_case = TRUE))
       
       bloco_limpo <- bloco_limpo %>%
-        str_replace_all("(?i)^municípios?\\s+de\\s+", "") %>%
-        str_replace_all("(?i)^município\\s+", "") %>%
-        str_replace_all("(?i),\\s*municípios?\\s+de\\s+", ", ") %>%
         str_squish() %>%
         str_replace_all("\\s*-\\s*Estado\\s*", " ") %>%
         str_replace_all("\\s*-\\s*$", "") %>%
@@ -550,7 +689,11 @@ scrape_portarias <- function(links,
       
       if (nchar(bloco_limpo) > 0) {
         partes <- bloco_limpo %>% str_split(",") %>% unlist() %>%
-          map_chr(str_squish) %>% keep(~ nchar(.x) > 0)
+          map_chr(str_squish) %>%
+          # remove "e" residual de junções ("..., no Estado da Paraíba e
+          # municípios de Araçoiaba" deixa ", e Araçoiaba" após as remoções)
+          map_chr(~ str_remove(.x, regex("^e\\s+", ignore_case = TRUE))) %>%
+          keep(~ nchar(.x) > 0)
         municipios_bloco <- character(0)
         for (parte in partes) {
           if (str_detect(parte, "\\s+e\\s+") && nchar(parte) > 10) {
@@ -602,12 +745,22 @@ scrape_portarias <- function(links,
     tibble(Municipios_Abrangencias = municipios_out, Estados_Abrangencias = estados_out)
   }
   
+  # Calcula a data de expiração: data de publicação (dd/mm/aaaa) + prazo.
+  # Aceita três grafias reais de prazo do DOU, tentadas nesta ordem:
+  #   "24 (vinte e quatro) meses"  -> com parênteses (forma padrão)
+  #   "24 meses"                   -> sem a palavra por extenso
+  #   "04 quatro meses"            -> palavra por extenso SEM parênteses
+  # Retorna dd/mm/aaaa, ou NA se data ou prazo forem NA/ininteligíveis.
   compute_expiration <- function(pub_date_str, prazo_str) {
     if (is.na(pub_date_str) || is.na(prazo_str)) return(NA_character_)
     dt <- lubridate::dmy(pub_date_str)
     if (is.na(dt)) return(NA_character_)
     m <- str_match(prazo_str, "(\\d{1,3})\\s*\\(([^\\)]*)\\)?\\s*(meses|mês|mes|anos|ano|Meses|Mês|Mes|Anos|Ano)")
     if (is.na(m[1])) m <- str_match(prazo_str, "(\\d{1,3})\\s*(meses|mês|mes|anos|ano|Meses|Mês|Mes|Anos|Ano)")
+    # Fallback tolerante: cobre casos sem parênteses como "04 quatro meses"
+    # (variação real do DOU). \\D*? consome a palavra por extenso entre o
+    # número e a unidade sem exigir os parênteses.
+    if (is.na(m[1])) m <- str_match(prazo_str, "(\\d{1,3})\\D*?(meses|mês|mes|anos|ano|Meses|Mês|Mes|Anos|Ano)")
     if (is.na(m[1])) return(NA_character_)
     qtd <- as.integer(m[2]); unit <- m[ncol(m)]
     exp_date <- switch(tolower(unit),
@@ -616,11 +769,21 @@ scrape_portarias <- function(links,
     format(exp_date, "%d/%m/%Y")
   }
   
+  # Extrai, de uma seção romana ("I - Expedir PERMISSÃO ... regidos pela
+  # Portaria Iphan nº 230/02;"), o Tipo (PERMISSÃO/AUTORIZAÇÃO/RENOVAÇÃO) e o
+  # Regimento_Normativo (norma citada após "regidos pela", sem datas por
+  # extenso nem o sufixo ", conforme o caso aplicável").
   extract_tipo_regime_by_roman <- function(section_line) {
     section_line <- repair_mojibake(section_line)
+    # Captura a palavra após "Expedir" (PERMISSÃO/AUTORIZAÇÃO/RENOVAÇÃO...).
+    # Com ignore_case a classe também casa minúsculas; a captura para no
+    # primeiro caractere fora da classe (vírgula, espaço).
     tipo <- str_match(section_line, regex("Expedir\\s*([A-ZÇÃÕ]+)", ignore_case = TRUE))[, 2]
-    if (is.na(tipo)) tipo <- str_match(section_line, regex("Expedir\\s+([A-Z]+)", ignore_case = TRUE))[, 2]
     
+    # ATENÇÃO: aqui o [^;]+ é INTENCIONAL e deve ser mantido. Diferente dos
+    # campos de item (Empreendedor etc.), nesta cláusula o ';' é o TERMINADOR
+    # da seção romana ("... regidos pela Portaria Iphan nº 230/02;"). Um .+
+    # guloso atravessa o ';' e captura o resto do documento.
     reg_raw <- str_match(section_line, regex("regidos\\s+pela\\s+([^;]+)(?:;|$)", ignore_case = TRUE))[, 2]
     if (!is.na(reg_raw)) {
       reg <- reg_raw %>%
@@ -720,16 +883,17 @@ scrape_portarias <- function(links,
   
   empty_df <- function() {
     tibble(
-      Portaria = character(), Data_Publicacao_DOU = character(), Anexo = character(),
-      N_Autorizacao = character(), Tipo = character(), Regimento_Normativo = character(),
-      Processo = character(), Retificado = character(), Enquadramento_IN = character(),
-      Empreendedor = character(), Empreendimento = character(), Projeto = character(),
-      Arqueologos_Coordenadores = character(), Arqueologos_Campo = character(),
-      Apoio_Institucional = character(), Municipios_Abrangencias = character(),
-      Estados_Abrangencias = character(), Prazo_Validade = character(),
-      Data_Expiracao = character(), Link_Portaria_DOU = character(),
-      Quantidade_Retificado_DOU = character(), Ultimo_Link_Retificado_DOU = character(),
-      Link_Revogado_DOU = character(), Chave_composta = character()
+      portaria = character(), data_publicacao_dou = character(), anexo = character(),
+      n_autorizacao = character(), tipo = character(), regimento_normativo = character(),
+      processo = character(), retificado = character(), enquadramento_in = character(),
+      empreendedor = character(), empreendimento = character(), projeto = character(),
+      arqueologos_coordenadores = character(), arqueologos_campo = character(),
+      apoio_institucional = character(), municipios_abrangencias = character(),
+      estados_abrangencias = character(), prazo_validade = character(),
+      data_expiracao = character(), link_portaria_dou = character(),
+      quantidade_retificado_dou = character(), ultimo_link_retificado_dou = character(),
+      link_revogado_dou = character(), chave_composta = character(),
+      portaria_revogada = logical(), ano = character()
     )
   }
   
@@ -756,6 +920,14 @@ scrape_portarias <- function(links,
   result_df <- result_df %>%
     mutate(across(where(is.character), ~ map_chr(., repair_mojibake)))
   
+  # Adicionando a coluna Portaria Revogada e Ano
+  result_df <- result_df %>%
+    mutate(Portaria_Revogada = NA,
+           Ano = substr(Data_Publicacao_DOU, 7, 10))
+  
+  # Converter TODAS as colunas do DataFrame para minúsculas
+  names(result_df) <- tolower(names(result_df))
+  
   if (!is.null(existing_df)) {
     result_df <- bind_rows(existing_df, result_df) %>% distinct()
   }
@@ -765,33 +937,24 @@ scrape_portarias <- function(links,
   result_df
 }
 
-# ============================================================================
+# =============================================================================
 # EXEMPLO DE USO
 # ----------------------------------------------------------------------------
-links <- c("https://www.in.gov.br/web/dou/-/portaria-n-63-de-6-de-julho-de-2026-717182605")
-
-df_portarias <- scrape_portarias(links, verbose = TRUE) # verbose para depurar
-
-# Adicionando a coluna Portaria Revogada e Ano
-df_portarias <- df_portarias %>% 
-  mutate(Portaria_Revogada= NA,
-         Ano = substr(Data_Publicacao_DOU, 7, 10))
-
-# Converter TODAS as colunas do DataFrame para minúsculas
-names(df_portarias) <- tolower(names(df_portarias))
+links <- c("https://www.in.gov.br/web/dou/-/portaria-n-68-de-16-de-julho-de-2026-719810055")
+df_portarias <- scrape_portarias(links, verbose = TRUE)   # verbose para depurar
 
 # Verificar os dados
 cat("📋 Resumo dos dados:\n")
 cat("Número de registros:", nrow(df_portarias), "\n")
 cat("Colunas:", paste(names(df_portarias), collapse = ", "), "\n")
 
-# 3. Verificar chaves únicas
+# Verificar chaves únicas
 cat("🔑 Verificando chaves compostas:\n")
 chaves_unicas <- unique(df_portarias$chave_composta)
 cat("Chaves únicas encontradas:", length(chaves_unicas), "\n")
 cat("Número de registros:", nrow(df_portarias), "\n")
 
-# Verificar quais valores estão duplicados na coluna
+# Verificar quais dados estão duplicados
 valores_duplicados <- df_portarias %>%
   count(chave_composta) %>%
   filter(n > 1) %>%
@@ -800,18 +963,7 @@ valores_duplicados <- df_portarias %>%
 cat("Valores duplicados na coluna chave_composta",":\n")
 print(valores_duplicados)
 
-#Verificar quantidade de endossos emitidos
-endossos <- df_portarias %>%
-  filter(!is.na(apoio_institucional ))
+# Ao gravar em CSV para abrir no Excel sem quebrar acentos, use BOM UTF-8:
+#   readr::write_excel_csv(df_portarias, "portarias.csv")
+# ============================================================================
 
-cat("Quantidade de endossos na portaria",":\n")
-count(endossos)
-
-# Enviar para o Supabase
-cat("☁️ Enviando dados para o Supabase...\n")
-
-upsert_to_supabase(
-  df = df_portarias,
-  table_name = "portarias_iphan",
-  unique_col = "chave_composta",
-  ignore_duplicates = TRUE)
