@@ -1128,7 +1128,7 @@ export default function ConsultaPortarias() {
                 )}
               </p>
               <p className="text-xs text-gray-500 mt-1">
-                Dica: use aspas para busca exata pelo nome do(a) arqueólogo(a) — ex.: <span className="font-mono">&quot;lucia&quot;</span> retorna Lucia/Lúcia, mas não Luciana.
+                Dica: Para buscar um nome exato de arqueólogo, utilize aspas — ex.: <span className="font-mono">&quot;lucia&quot;</span> retornará Lucia/Lúcia, mas não incluirá variações como Luciana
               </p>
             </div>
           </div>
