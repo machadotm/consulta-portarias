@@ -3,6 +3,7 @@
 Sistema de coleta, armazenamento e consulta das portarias de autorização de pesquisa arqueológica publicadas no **Diário Oficial da União (DOU)**, desenvolvido pela equipe da Coordenação-Geral de Licenciamento Ambiental (CGLic) do IPHAN.
 
 **Sistema em produção:** https://consulta-portarias.vercel.app/
+
 **Módulo histórico (1991–2025):** https://banco-portarias-cna.vercel.app/
 
 ---
