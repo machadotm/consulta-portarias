@@ -46,17 +46,6 @@
 #   # Só verificar a contagem atual na tabela:
 #   enviar_portarias(verificar = TRUE)
 #
-# EQUIVALÊNCIA COM O COMANDO ANTIGO
-#   Antes o envio era feito por upsert_to_supabase(...). Esse comando:
-#       upsert_to_supabase(df = df_portarias, table_name = "portarias_iphan",
-#                          unique_col = "chave_composta", ignore_duplicates = TRUE)
-#   passa a ser, na função unificada:
-#       enviar_portarias(df = df_portarias, table_name = "portarias_iphan",
-#                        unique_col = "chave_composta", ignore_duplicates = TRUE)
-#   Para não quebrar pipelines existentes, mantém-se ao final deste arquivo um
-#   ALIAS `upsert_to_supabase()` que apenas repassa a chamada para
-#   `enviar_portarias()` — então o comando antigo continua funcionando.
-#
 # PARÂMETROS
 #   df                dataframe a enviar (uma linha por registro)
 #   table_name        tabela no Supabase (default "portarias_iphan")

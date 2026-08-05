@@ -1120,7 +1120,7 @@ export default function ConsultaPortarias() {
                 )}
               </div>
               <p className="text-sm text-gray-600 mt-2">
-                A base de dados consultada possui <span className="font-semibold">{totalRegistros.toLocaleString()}</span> registros
+                A base de dados consultável possui <span className="font-semibold">{totalRegistros.toLocaleString()}</span> registros
                 {buscaAplicada && (
                   <span className="font-semibold">
                     {' '}- Buscando por: "{buscaAplicada}" - encontrado {dadosFiltrados.length} registros
