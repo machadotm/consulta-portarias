@@ -10,7 +10,7 @@ Sistema de coleta, armazenamento e consulta das portarias de autorização de pe
 
 ## Contexto
 
-A Instrução Normativa IPHAN nº 6/2025 (§1º do Art. 46) condiciona a concessão de nova autorização de pesquisa arqueológica à comprovação da **exequibilidade** de todos os projetos do arqueólogo coordenador de campo. Para realizar essa verificação, os técnicos em Arqueologia da CGLic precisam consultar, com segurança e rapidez, as portarias vigentes de cada profissional.
+A Instrução Normativa IPHAN nº 6/2025 (§1º do Art. 46) condiciona a concessão de nova autorização de pesquisa arqueológica à comprovação da **exequibilidade** de todos os projetos do arqueólogo coordenador de campo. Para realizar essa verificação, os técnicos em Arqueologia da CGLic precisam consultar, com segurança e rapidez, as autorizações vigentes de cada profissional.
 
 Antes deste sistema, a consulta dependia de uma planilha estática publicada no site do IPHAN (mais de 32 mil registros desde 1991), atualizada de forma irregular, sem coluna para o coordenador de campo, sem link para o DOU e sem status de vigência. Este projeto substitui esse fluxo por uma base extraída diretamente do DOU, atualizada a cada publicação (terças e sextas-feiras) e consultável em tempo real.
 
@@ -26,7 +26,13 @@ Antes deste sistema, a consulta dependia de uma planilha estática publicada no 
 │  Script R           │  Web scraping + tratamento
 │  (extração)         │  Script_Scraping_Portarias_R.R
 └─────────┬───────────┘
-          │  API REST (insert)
+          │  dataframe
+          ▼
+┌─────────────────────┐
+│  Script R           │  Envio via API REST + deduplicação
+│  (carga)            │  Script_Supabase_R.R
+└─────────┬───────────┘
+          │  insert / upsert
           ▼
 ┌─────────────────────┐
 │  Supabase           │  PostgreSQL em nuvem
@@ -47,6 +53,7 @@ O sistema é complementado por um **módulo histórico** ([banco-portarias-cna.v
 | Camada | Tecnologia |
 |---|---|
 | Extração | R (rvest/httr/dplyr) — `Script_Scraping_Portarias_R.R` |
+| Carga no banco | R (httr/jsonlite/dotenv) — `Script_Supabase_R.R` |
 | Banco de dados | Supabase (PostgreSQL, plano gratuito) |
 | Front-end | Next.js 16 · React 19 · Tailwind CSS 4 · TypeScript |
 | Hospedagem | Vercel |
@@ -55,7 +62,8 @@ O sistema é complementado por um **módulo histórico** ([banco-portarias-cna.v
 ## Estrutura do repositório
 
 ```
-├── Script_Scraping_Portarias_R.R   # Script de extração (R) — documentado no cabeçalho
+├── Script_Scraping_Portarias_R.R   # Script de extração do DOU (R) — documentado no cabeçalho
+├── Script_Supabase_R.R             # Script de envio ao Supabase (R) — documentado no cabeçalho
 ├── src/app/page.tsx                # Interface de consulta (componente único)
 ├── src/app/layout.tsx              # Layout base + Vercel Analytics
 ├── public/                         # Assets estáticos
@@ -92,7 +100,10 @@ readr::write_excel_csv(df, "portarias.csv")
 
 ## Banco de dados (Supabase)
 
+Script único de criação da estrutura — executar no **SQL Editor** do Supabase:
+
 ```sql
+-- 1) Tabela
 CREATE TABLE portarias_iphan (
     id SERIAL PRIMARY KEY,
     Portaria TEXT,
@@ -123,11 +134,59 @@ CREATE TABLE portarias_iphan (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- 2) Índice único na chave composta (anti-duplicidade)
 CREATE UNIQUE INDEX idx_portarias_chave_composta
     ON portarias_iphan(Chave_composta);
+
+-- 3) Atualização automática de updated_at a cada UPDATE
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_portarias_updated_at
+BEFORE UPDATE ON portarias_iphan
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 ```
 
-A chave composta única (`portaria + processo`) impede duplicidade de registros entre execuções do script.
+**Chave composta.** O par `portaria + processo` é único e impede duplicidade de registros entre execuções do script de carga.
+
+**Trilha temporal.** No PostgreSQL, `DEFAULT NOW()` preenche a coluna apenas na inserção — não há cláusula que a atualize sozinha a cada alteração. Por isso o gatilho do item 3: com ele, `updated_at` passa a registrar a data de qualquer modificação posterior do registro, como a marcação de uma retificação ou revogação, permitindo auditar quando cada dado mudou. A interface exibe a data da última atualização a partir do maior `updated_at` da tabela.
+
+## O script de carga (R)
+
+O `Script_Supabase_R.R` envia o dataframe produzido pela extração à tabela do Supabase via API REST, reunindo toda a operação em uma única função pública, `enviar_portarias()`.
+
+**Uso:**
+
+```r
+source("Script_Supabase_R.R")
+
+# Passo 0 — apenas na primeira configuração: gera um .env modelo na pasta.
+# Preencha em seguida com as chaves reais. NÃO rode de novo: sobrescreve o .env.
+create_env_file()
+
+# Envio padrão: insere os novos e ignora chaves já existentes
+enviar_portarias(df, unique_col = "chave_composta")
+
+# Modo merge: atualiza os registros já existentes (upsert)
+enviar_portarias(df, unique_col = "chave_composta", ignore_duplicates = FALSE)
+
+# Diagnóstico
+enviar_portarias(checar_config = TRUE)   # valida o .env
+enviar_portarias(verificar = TRUE)       # consulta a contagem na tabela
+```
+
+**Deduplicação em duas frentes.** Além de verificar quais chaves já existem no banco, a função **de-duplica o próprio lote em memória** antes do envio, mantendo a primeira ocorrência de cada `chave_composta` e relatando as chaves repetidas. Isso resolve um problema concreto: com a constraint `UNIQUE`, duas linhas novas com a mesma chave no mesmo POST abortam o INSERT inteiro no Postgres — e o `serial` do `id` é consumido mesmo na falha, gerando lacunas na sequência.
+
+**Retorno:** lista com `enviados`, `ignorados_existentes`, `duplicados_internos`, `total_original` e `status`.
+
+**Credenciais:** lidas de um arquivo `.env` (não versionado) com `SUPABASE_URL`, `SUPABASE_ANON_KEY` e `SUPABASE_SERVICE_ROLE_KEY`. O parâmetro `use_service_role` alterna entre as chaves. **Nunca versione o `.env`.**
+
+**Dependências:** `httr`, `jsonlite`, `dotenv`.
 
 ## Interface de consulta (Next.js)
 
@@ -146,7 +205,7 @@ Funcionalidades implementadas em `src/app/page.tsx`:
 
 ## Operação
 
-A coleta é **semiautomática**: a cada publicação do DOU (terças e sextas-feiras), o operador fornece ao script o link da edição; o script extrai todas as autorizações (em média 24 por edição, distribuídas em anexos de permissão/autorização/renovação) e insere no Supabase via API.
+A coleta é **semiautomática**: a cada publicação do DOU (terças e sextas-feiras), o operador fornece ao script o link da edição; o script de extração recupera todas as autorizações (em média 24 por edição, distribuídas em anexos de permissão/autorização/renovação) e o script de carga as envia ao Supabase via API, ignorando as que já constam da base.
 
 **Retificações e revogações** não seguem padrão textual no DOU que permita extração automática confiável. Atualmente, os status `Vigente Retificado` e `Revogada` são atualizados manualmente via SQL Editor do Supabase, com os respectivos links. A captura automática desses atos está no roadmap.
 
@@ -172,19 +231,18 @@ npm run dev
 # http://localhost:3000
 ```
 
-Para o script R: R 4.x com os pacotes `rvest`, `httr`, `dplyr`, `stringr`, `purrr`, `tibble`, `readr`.
+Para os scripts em R: R 4.x com os pacotes `rvest`, `httr`, `dplyr`, `stringr`, `purrr`, `tibble` e `readr` (extração) e `httr`, `jsonlite` e `dotenv` (carga). As credenciais do Supabase ficam em um `.env` local, gerado por `create_env_file()` e não versionado.
 
 ## Limitações conhecidas e roadmap
 
 - [ ] Captura automática de retificações e revogações (hoje manual, por ausência de padrão textual na fonte);
-- [ ] Gatilho de `updated_at` no banco para trilha temporal de alterações;
 - [ ] Institucionalização em domínio próprio do IPHAN, com abertura ao público externo (superintendências, consultorias, arqueólogos);
 - [ ] A padronização dos extratos na origem tende a ser resolvida com o futuro SAIP 2.0 (Sistema de Avaliação do Impacto ao Patrimônio Cultural).
 
 ## Contexto normativo
 
 - [Instrução Normativa IPHAN nº 6/2025](https://www.in.gov.br/web/dou/-/instrucao-normativa-iphan-n-6-de-28-de-novembro-de-2025-672013509) — §1º do Art. 46 (comprovação de exequibilidade)
-- [Ofício nº 58/2018/CNA/DEPAM-IPHAN](https://www.gov.br/iphan/pt-br/patrimonio-cultural/patrimonio-arqueologico/Ofcio_58_diretrizes_emissao_portarias_cna.pdf/@@display-file/file) — diretrizes para emissão de portarias
+- [Ofício nº 58/2018/CNA/DEPAM-IPHAN](https://www.gov.br/iphan/pt-br/patrimonio-cultural/patrimonio-arqueologico/Ofcio_58_diretrizes_emissao_portarias_cna.pdf/@@display-file/file) — diretrizes para emissão de múltiplas portarias
 
 ## Créditos
 
