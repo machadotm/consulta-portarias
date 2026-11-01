@@ -1075,16 +1075,26 @@ export default function ConsultaPortarias() {
           <p className="text-gray-900 text-sm sm:text-base px-2">
             Para consultar dados anteriores a 06/11/2025 - {' '}
             <a
-              href="https://banco-portarias-cna.vercel.app/"
+              href="https://docs.google.com/spreadsheets/d/1R5svYhxvBHNOW35NEy23oE8VXX1eWq5v/edit?gid=246705190#gid=246705190"
               target="_blank"
               rel="noopener noreferrer"
               className="text-blue-600 hover:text-blue-800 underline"
             >
-              Ver banco de portarias
+              Ver planilha do CNA/IPHAN
             </a>
           </p>
           <p className="text-gray-600 text-sm sm:text-base px-2">
             Busque e filtre as informações de acordo com suas necessidades
+          </p>
+          <p className="text-gray-600 text-sm sm:text-base px-2">
+            <a
+            href="https://iphangovbr-my.sharepoint.com/:b:/g/personal/tacio_machado_iphan_gov_br/IQCYWKoAYDngTKrHXvXzLWCHAYGNzCoJOuk2bUGTFpjmOnY?e=xr4JKp"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-600 hover:text-blue-800 underline"
+            >
+            Manual de uso do sistema
+            </a>
           </p>
         </div>
 
@@ -1420,6 +1430,16 @@ export default function ConsultaPortarias() {
         <div className="mt-6 sm:mt-8 text-center text-gray-500 text-sm px-2">
           <p>
             Última atualização: {dataAtualizacao || 'Carregando...'}
+          <br />
+            Em desenvolvimento pela equipe de inovação da CGLic/IPHAN
+          <br />
+            Dúvidas, sugestões, elogios e reclamações, encaminhar para:{' '}
+            <a
+            href='mailto:licenciamento.dados@iphan.gov.br'
+            className='text-blue-500 hover:text-blue-600 underline transition-colors'
+            >
+            licenciamento.dados@iphan.gov.br
+            </a>            
           </p>
         </div>
       </div>
