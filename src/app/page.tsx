@@ -1080,20 +1080,21 @@ export default function ConsultaPortarias() {
               rel="noopener noreferrer"
               className="text-blue-600 hover:text-blue-800 underline"
             >
-              Ver planilha do CNA/IPHAN
+              ver planilha do CNA/IPHAN
             </a>
           </p>
           <p className="text-gray-600 text-sm sm:text-base px-2">
             Busque e filtre as informações de acordo com suas necessidades
           </p>
           <p className="text-gray-600 text-sm sm:text-base px-2">
+            Manual de uso do sistema - {' '}
             <a
             href="https://iphangovbr-my.sharepoint.com/:b:/g/personal/tacio_machado_iphan_gov_br/IQCYWKoAYDngTKrHXvXzLWCHAYGNzCoJOuk2bUGTFpjmOnY?e=xr4JKp"
             target="_blank"
             rel="noopener noreferrer"
             className="text-blue-600 hover:text-blue-800 underline"
             >
-            Manual de uso do sistema
+            clique aqui
             </a>
           </p>
         </div>
@@ -1431,7 +1432,7 @@ export default function ConsultaPortarias() {
           <p>
             Última atualização: {dataAtualizacao || 'Carregando...'}
           <br />
-            Em desenvolvimento pela equipe de inovação da CGLic/IPHAN
+            Sistema em desenvolvimento pela equipe de inovação da CGLic/IPHAN
           <br />
             Dúvidas, sugestões, elogios e reclamações, encaminhar para:{' '}
             <a
